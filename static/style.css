@@ -125,7 +125,8 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
     background: var(--bg-input); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 7px 9px; font-size: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.control-bar .preset-label { flex: 1 1 220px; }
+.control-bar .preset-label { flex: 1 1 260px; max-width: 460px; }
+.control-bar .num-xs { flex: 0 0 auto; }
 .control-bar select { width: 100%; }
 .control-bar .num-xs input { width: 72px; }
 
