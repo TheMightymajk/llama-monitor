@@ -118,7 +118,7 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
     border-radius: var(--radius);
     box-shadow: var(--shadow-soft), var(--glass-edge);
     padding: 12px 14px; margin-bottom: 14px;
-    display: flex; flex-wrap: wrap; gap: 10px; align-items: end;
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start;
 }
 .control-bar label { display: flex; flex-direction: column; gap: 3px; font-size: 0.75rem; color: var(--text-dim); min-width: 0; }
 .control-bar select, .control-bar input {
