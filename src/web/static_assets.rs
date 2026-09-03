@@ -4,3 +4,4 @@ pub const APP_JS: &str = include_str!("../../static/app.js");
 pub const MANIFEST_JSON: &str = include_str!("../../static/manifest.json");
 pub const SW_JS: &str = include_str!("../../static/sw.js");
 pub const ICON_SVG: &str = include_str!("../../static/icon.svg");
+pub const MARKED_JS: &str = include_str!("../../static/vendor/marked.min.js");

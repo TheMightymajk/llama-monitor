@@ -3,8 +3,8 @@
     "short_name": "LlamaMonitor",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#2e3440",
-    "theme_color": "#2e3440",
+    "background_color": "#16181c",
+    "theme_color": "#16181c",
     "icons": [
         { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
     ]

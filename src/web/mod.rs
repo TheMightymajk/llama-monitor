@@ -54,5 +54,15 @@ fn static_routes() -> impl Filter<Extract = (impl warp::Reply,), Error = warp::R
         .and(warp::get())
         .map(|| warp::reply::with_header(static_assets::ICON_SVG, "content-type", "image/svg+xml"));
 
-    index.or(css).or(js).or(manifest).or(sw).or(icon)
+    let marked = warp::path!("vendor" / "marked.min.js")
+        .and(warp::get())
+        .map(|| {
+            warp::reply::with_header(
+                static_assets::MARKED_JS,
+                "content-type",
+                "application/javascript",
+            )
+        });
+
+    index.or(css).or(js).or(manifest).or(sw).or(icon).or(marked)
 }

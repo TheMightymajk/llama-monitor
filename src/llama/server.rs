@@ -250,6 +250,15 @@ pub async fn start_server(
         *running = true;
     }
     {
+        let mut started = state.server_started_at.lock().unwrap();
+        *started = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+    }
+    {
         let mut cfg = state.server_config.lock().unwrap();
         *cfg = Some(config);
     }
@@ -270,6 +279,10 @@ pub async fn stop_server(state: &AppState) -> Result<()> {
     {
         let mut running = state.server_running.lock().unwrap();
         *running = false;
+    }
+    {
+        let mut started = state.server_started_at.lock().unwrap();
+        *started = None;
     }
     {
         let mut cfg = state.server_config.lock().unwrap();

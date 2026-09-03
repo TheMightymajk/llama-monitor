@@ -101,10 +101,11 @@ async fn main() -> Result<()> {
     }
 
     let port = app_config.port;
+    let host = config::parse_bind_ip(&app_config.host);
     let routes = web::build_routes(state, app_config);
 
-    println!("[info] Llama Monitor running on http://0.0.0.0:{port}");
-    warp::serve(routes).run(([0, 0, 0, 0], port)).await;
+    println!("[info] Llama Monitor running on http://{host}:{port}");
+    warp::serve(routes).run((host, port)).await;
 
     Ok(())
 }

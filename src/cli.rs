@@ -19,6 +19,10 @@ pub struct AppArgs {
     #[arg(short, long, default_value_t = 7778)]
     pub port: u16,
 
+    /// Bind address for the monitor web UI (default: localhost only)
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+
     /// Directory containing .gguf model files for auto-discovery
     #[arg(short = 'm', long)]
     pub models_dir: Option<PathBuf>,

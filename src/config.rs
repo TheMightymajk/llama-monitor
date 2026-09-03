@@ -1,6 +1,13 @@
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use crate::cli::AppArgs;
+
+/// Parse a bind host string. Invalid values fall back to 127.0.0.1.
+pub fn parse_bind_ip(host: &str) -> IpAddr {
+    host.parse()
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -8,6 +15,7 @@ pub struct AppConfig {
     pub llama_server_path: PathBuf,
     pub llama_server_cwd: PathBuf,
     pub port: u16,
+    pub host: String,
     pub gpu_backend: String,
     pub models_dir: Option<PathBuf>,
     pub presets_file: PathBuf,
@@ -34,6 +42,7 @@ impl AppConfig {
             llama_server_path: args.llama_server_path.unwrap_or(default_server_path),
             llama_server_cwd: args.llama_server_cwd.unwrap_or(default_server_cwd),
             port: args.port,
+            host: args.host,
             gpu_backend: args.gpu_backend,
             models_dir: args.models_dir,
             presets_file,
@@ -55,6 +64,7 @@ mod tests {
             llama_server_path: None,
             llama_server_cwd: None,
             port: 7778,
+            host: "127.0.0.1".into(),
             models_dir: None,
             presets_file: None,
             gpu_backend: "auto".into(),
@@ -63,6 +73,7 @@ mod tests {
         };
         let config = AppConfig::from_args(args);
         assert_eq!(config.port, 7778);
+        assert_eq!(config.host, "127.0.0.1");
         assert_eq!(config.gpu_backend, "auto");
         assert!(
             config
@@ -87,6 +98,7 @@ mod tests {
             llama_server_path: Some(PathBuf::from("/usr/bin/llama-server")),
             llama_server_cwd: Some(PathBuf::from("/tmp")),
             port: 9999,
+            host: "0.0.0.0".into(),
             models_dir: Some(PathBuf::from("/models")),
             presets_file: Some(PathBuf::from("/custom/presets.json")),
             gpu_backend: "nvidia".into(),
@@ -99,7 +111,40 @@ mod tests {
             PathBuf::from("/usr/bin/llama-server")
         );
         assert_eq!(config.port, 9999);
+        assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.gpu_arch_override, Some("gfx1100".into()));
         assert_eq!(config.gpu_devices_override, Some("0,1".into()));
+    }
+
+    #[test]
+    fn parse_bind_ip_localhost_v4() {
+        assert_eq!(
+            parse_bind_ip("127.0.0.1"),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        );
+    }
+
+    #[test]
+    fn parse_bind_ip_all_interfaces() {
+        assert_eq!(
+            parse_bind_ip("0.0.0.0"),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+        );
+    }
+
+    #[test]
+    fn parse_bind_ip_localhost_v6() {
+        assert_eq!(
+            parse_bind_ip("::1"),
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+        );
+    }
+
+    #[test]
+    fn parse_bind_ip_invalid_falls_back_to_localhost() {
+        assert_eq!(
+            parse_bind_ip("not-an-ip"),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        );
     }
 }

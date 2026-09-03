@@ -1,120 +1,213 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset='utf-8'>
-    <meta name='viewport' content='width=device-width, initial-scale=1'>
-    <meta name='theme-color' content='#2e3440'>
-    <meta name='apple-mobile-web-app-capable' content='yes'>
-    <meta name='apple-mobile-web-app-status-bar-style' content='black-translucent'>
-    <link rel='manifest' href='/manifest.json'>
-    <link rel='icon' href='/icon.svg' type='image/svg+xml'>
-    <link rel='apple-touch-icon' href='/icon.svg'>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#16181c">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/icon.svg">
     <title>Llama Monitor</title>
     <link rel="stylesheet" href="/style.css">
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/vendor/marked.min.js"></script>
 </head>
 <body>
-    <div class="title">
-        <h1>Llama Monitor</h1>
-        <div style="display:flex;align-items:center;gap:8px;padding-bottom:4px;">
-            <span class="status-dot stopped" id="status-dot"></span>
-            <span class="status-text" id="status-text">Stopped</span>
-            <button class="btn-config" onclick="openConfigModal()" title="Configuration">&#9881;</button>
+    <header class="topbar">
+        <div class="brand">
+            <span class="brand-mark" aria-hidden="true"></span>
+            <h1>Llama Monitor</h1>
         </div>
-    </div>
+        <div class="topbar-status" aria-live="polite">
+            <span class="pill" id="server-pill">
+                <span class="status-dot stopped" id="status-dot"></span>
+                <span id="status-text">Stopped</span>
+            </span>
+            <span class="pill" id="ws-pill">
+                <span class="status-dot stopped" id="ws-dot"></span>
+                <span id="ws-text">WebSocket…</span>
+            </span>
+            <span class="pill pill-muted" id="uptime-pill" title="llama-server uptime">
+                <span class="pill-key">Uptime</span>
+                <span id="uptime-text">—</span>
+            </span>
+        </div>
+        <div class="topbar-actions">
+            <button type="button" class="btn btn-start" id="btn-start">Start</button>
+            <button type="button" class="btn btn-stop" id="btn-stop" disabled>Stop</button>
+            <button type="button" class="btn-config" id="btn-config" title="Configuration" aria-label="Configuration">&#9881;</button>
+        </div>
+    </header>
 
-    <div class="tab-bar">
-        <button class="tab-btn active" onclick="switchTab('server')" id="tab-server">Server<span class="tab-badge" id="badge-server"></span></button>
-        <button class="tab-btn" onclick="switchTab('chat')" id="tab-chat">Chat<span class="tab-badge" id="badge-chat"></span></button>
-        <button class="tab-btn" onclick="switchTab('logs')" id="tab-logs">Logs<span class="tab-badge" id="badge-logs"></span></button>
-    </div>
+    <nav class="tab-bar" role="tablist">
+        <button type="button" class="tab-btn active" data-tab="server" id="tab-server">Dashboard<span class="tab-badge" id="badge-server"></span></button>
+        <button type="button" class="tab-btn" data-tab="chat" id="tab-chat">Chat<span class="tab-badge" id="badge-chat"></span></button>
+        <button type="button" class="tab-btn" data-tab="logs" id="tab-logs">Logs<span class="tab-badge" id="badge-logs"></span></button>
+    </nav>
 
-    <!-- Page: Server (control + monitor) -->
     <div class="page active" id="page-server">
         <div class="control-bar" id="controls">
             <label class="preset-label">Model Preset
                 <select id="preset-select"></select>
                 <span class="preset-actions">
-                    <button class="btn-sm btn-preset" onclick="openPresetModal('new')" title="Create new preset">New</button>
-                    <button class="btn-sm btn-preset" onclick="openPresetModal('edit')" title="Edit selected preset">Edit</button>
-                    <button class="btn-sm btn-preset" onclick="copyPreset()" title="Duplicate selected preset">Copy</button>
-                    <button class="btn-sm btn-preset btn-preset-delete" onclick="deletePreset()" title="Delete selected preset">Delete</button>
-                    <button class="btn-sm btn-preset-reset" onclick="resetPresets()" title="Reset all presets to built-in defaults">Reset</button>
+                    <button type="button" class="btn-sm btn-preset" id="btn-preset-new" title="Create new preset">New</button>
+                    <button type="button" class="btn-sm btn-preset" id="btn-preset-edit" title="Edit selected preset">Edit</button>
+                    <button type="button" class="btn-sm btn-preset" id="btn-preset-copy" title="Duplicate selected preset">Copy</button>
+                    <button type="button" class="btn-sm btn-preset btn-preset-delete" id="btn-preset-delete" title="Delete selected preset">Delete</button>
+                    <button type="button" class="btn-sm btn-preset-reset" id="btn-preset-reset" title="Reset all presets to built-in defaults">Reset</button>
                 </span>
             </label>
             <label class="num-xs">Port
                 <input id="port" type="number" value="8080">
             </label>
-            <button class="btn btn-start" id="btn-start" onclick="doStart()">Start</button>
-            <button class="btn btn-stop" id="btn-stop" onclick="doStop()" disabled>Stop</button>
         </div>
 
-        <h2>Inference</h2>
-        <div class="inference-panel" id="inference">
-            <div class="metric-card"><div class="metric-label">Prompt Speed</div><div class="metric-value prompt" id="m-prompt">&mdash;</div></div>
-            <div class="metric-card"><div class="metric-label">Generation Speed</div><div class="metric-value gen" id="m-gen">&mdash;</div></div>
-            <div class="metric-card"><div class="metric-label">Context (KV Cache)</div><div class="metric-value ctx" id="m-ctx">&mdash;</div></div>
-            <div class="metric-card"><div class="metric-label">Slots</div><div class="metric-value slots" id="m-slots">&mdash;</div></div>
-            <div class="metric-card"><div class="metric-label">Server Status</div><div class="metric-value" id="m-status">&mdash;</div></div>
-        </div>
-        <h2>GPUs</h2>
-        <div class="table-wrap">
-        <table class="gpu-table">
-            <colgroup>
-                <col style="width:14%"><col style="width:10%"><col style="width:10%"><col style="width:10%"><col style="width:24%"><col style="width:16%"><col style="width:16%">
-            </colgroup>
-            <thead><tr>
-                <th>GPU</th><th>Temp</th><th>Load</th><th>VRAM</th><th>Power</th><th>SCLK</th><th>MCLK</th>
-            </tr></thead>
-            <tbody id="gpu-rows"></tbody>
-        </table>
-        </div>
+        <section class="hero" id="hero" aria-label="Key metrics">
+            <article class="hero-card">
+                <div class="hero-label">Model</div>
+                <div class="hero-value" id="hero-model">—</div>
+                <div class="hero-sub" id="hero-model-sub">selected preset</div>
+            </article>
+            <article class="hero-card tone-prompt">
+                <div class="hero-label">Prompt</div>
+                <div class="hero-value" id="hero-prompt">—</div>
+                <div class="hero-sub">tok/s · lifetime avg</div>
+            </article>
+            <article class="hero-card tone-gen">
+                <div class="hero-label">Generation</div>
+                <div class="hero-value" id="hero-gen">—</div>
+                <div class="hero-sub">tok/s · lifetime avg</div>
+            </article>
+            <article class="hero-card tone-kv">
+                <div class="hero-label">VRAM</div>
+                <div class="hero-value" id="hero-vram">—</div>
+                <div class="hero-sub" id="hero-vram-sub">GPU memory</div>
+            </article>
+            <article class="hero-card">
+                <div class="hero-label">GPU</div>
+                <div class="hero-value" id="hero-gpu">—</div>
+                <div class="hero-sub">utilization</div>
+            </article>
+            <article class="hero-card tone-amber">
+                <div class="hero-label">Temp</div>
+                <div class="hero-value" id="hero-temp">—</div>
+                <div class="hero-sub">hottest GPU</div>
+            </article>
+            <article class="hero-card">
+                <div class="hero-label">Requests</div>
+                <div class="hero-value" id="hero-reqs">—</div>
+                <div class="hero-sub">active now</div>
+            </article>
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
+                <h2>Running model</h2>
+                <span class="source-tag" id="spec-source">preset</span>
+            </div>
+            <dl class="spec-grid">
+                <div><dt>Name</dt><dd id="spec-name">—</dd></div>
+                <div><dt>GGUF file</dt><dd id="spec-gguf">—</dd></div>
+                <div><dt>Quantization</dt><dd id="spec-quant">—</dd></div>
+                <div><dt>File size</dt><dd id="spec-size">—</dd></div>
+                <div><dt>Context</dt><dd id="spec-ctx">—</dd></div>
+                <div><dt>Native context</dt><dd id="spec-ctx-native">—</dd></div>
+                <div><dt>GPU layers</dt><dd id="spec-ngl">—</dd></div>
+                <div><dt>Batch / ubatch</dt><dd id="spec-batch">—</dd></div>
+                <div><dt>Parallel slots</dt><dd id="spec-slots">—</dd></div>
+                <div><dt>KV cache</dt><dd id="spec-kv">—</dd></div>
+                <div><dt>Flash attention</dt><dd id="spec-fa">—</dd></div>
+                <div><dt>Speculative / MTP</dt><dd id="spec-spec">—</dd></div>
+            </dl>
+        </section>
+
+        <section class="panel">
+            <h2>Inference</h2>
+            <div class="inference-panel" id="inference">
+                <div class="metric-card"><div class="metric-label">Prompt Speed</div><div class="metric-value prompt" id="m-prompt">—</div></div>
+                <div class="metric-card"><div class="metric-label">Generation Speed</div><div class="metric-value gen" id="m-gen">—</div></div>
+                <div class="metric-card"><div class="metric-label">Context (KV Cache)</div><div class="metric-value ctx" id="m-ctx">—</div></div>
+                <div class="metric-card"><div class="metric-label">Slots</div><div class="metric-value slots" id="m-slots">—</div></div>
+                <div class="metric-card"><div class="metric-label">Server Status</div><div class="metric-value" id="m-status">—</div></div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>GPUs</h2>
+            <div class="table-wrap">
+            <table class="gpu-table">
+                <colgroup>
+                    <col style="width:22%"><col style="width:10%"><col style="width:10%"><col style="width:14%"><col style="width:18%"><col style="width:13%"><col style="width:13%">
+                </colgroup>
+                <thead><tr>
+                    <th>GPU</th><th>Temp</th><th>Load</th><th>VRAM</th><th>Power</th><th>SCLK</th><th>MCLK</th>
+                </tr></thead>
+                <tbody id="gpu-rows"></tbody>
+            </table>
+            </div>
+            <p class="empty-hint" id="gpu-empty">No GPU metrics on this machine. AMD R9700 / ROCm data appears when amd-smi or rocm-smi is available.</p>
+        </section>
     </div>
 
-    <!-- Page: Chat -->
     <div class="page" id="page-chat">
         <div class="chat-actions">
-            <button onclick="clearChat()">Clear</button>
+            <button type="button" id="btn-chat-clear">Clear</button>
         </div>
         <div class="chat-messages" id="chat-messages"></div>
         <div class="chat-input-row">
             <textarea id="chat-input" rows="2" placeholder="Send a message... (Enter to send, Shift+Enter for newline)"></textarea>
-            <button class="btn btn-start" id="btn-send" onclick="sendChat()">Send</button>
+            <button type="button" class="btn btn-start" id="btn-send">Send</button>
         </div>
     </div>
 
-    <!-- Page: Logs -->
     <div class="page" id="page-logs">
-        <div class="log-panel" id="log-panel" style="flex:1;"></div>
+        <div class="log-panel" id="log-panel"></div>
     </div>
+
+<div class="modal-overlay" id="confirm-modal">
+    <div class="modal modal-confirm">
+        <div class="modal-header">
+            <h2 id="confirm-title">Confirm</h2>
+            <button type="button" class="modal-close" id="confirm-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p id="confirm-message"></p>
+        </div>
+        <div class="modal-buttons">
+            <button type="button" class="btn btn-modal-cancel" id="confirm-cancel">Cancel</button>
+            <button type="button" class="btn" id="confirm-ok">Confirm</button>
+        </div>
+    </div>
+</div>
 
 <!-- Config Modal -->
 <div class="modal-overlay" id="config-modal">
     <div class="modal" style="width:540px;">
         <div class="modal-header">
             <h2>Configuration</h2>
-            <button type="button" class="modal-close" onclick="closeConfigModal()" aria-label="Close">&times;</button>
+            <button type="button" class="modal-close" id="btn-config-close" aria-label="Close">&times;</button>
         </div>
         <div class="modal-body">
 
             <details class="modal-section" open>
                 <summary>Server Paths</summary>
                 <label class="modal-field" title="Path to the llama-server binary. Leave empty to use $PATH.">llama-server binary
-                    <div style="display:flex;gap:6px;">
-                        <input type="text" id="set-server-path" placeholder="llama-server (from $PATH)" style="flex:1;">
-                        <button type="button" class="btn-sm btn-preset" onclick="openFileBrowser('set-server-path','executable')">Browse</button>
+                    <div class="field-row">
+                        <input type="text" id="set-server-path" placeholder="llama-server (from $PATH)">
+                        <button type="button" class="btn-sm btn-preset" id="browse-server-path">Browse</button>
                     </div>
                 </label>
                 <label class="modal-field" title="Working directory for llama-server process.">Working Directory
-                    <div style="display:flex;gap:6px;">
-                        <input type="text" id="set-server-cwd" placeholder=". (current dir)" style="flex:1;">
-                        <button type="button" class="btn-sm btn-preset" onclick="openFileBrowser('set-server-cwd','dir')">Browse</button>
+                    <div class="field-row">
+                        <input type="text" id="set-server-cwd" placeholder=". (current dir)">
+                        <button type="button" class="btn-sm btn-preset" id="browse-server-cwd">Browse</button>
                     </div>
                 </label>
             </details>
 
             <details class="modal-section" open>
-                <summary>GPU Environment <span id="gpu-env-info" style="font-weight:400;color:#6a7585;font-size:0.72rem;"></span></summary>
+                <summary>GPU Environment <span id="gpu-env-info" class="summary-aside"></span></summary>
                 <div class="modal-row">
                     <label class="modal-field" title="GPU architecture for ROCm HSA_OVERRIDE_GFX_VERSION. Auto = let ROCm detect natively.">Architecture
                         <select id="gpu-env-arch"></select>
@@ -126,34 +219,34 @@
                 <label class="modal-field" title="Path to ROCm installation directory.">ROCm Path
                     <input type="text" id="gpu-env-rocm-path" value="/opt/rocm">
                 </label>
-                <div id="gpu-detected-info" style="font-size:0.72rem;color:#6a7585;margin-top:2px;"></div>
+                <div id="gpu-detected-info" class="hint-text"></div>
             </details>
 
         </div>
         <div class="modal-buttons">
-            <button type="button" class="btn btn-modal-cancel" onclick="closeConfigModal()">Cancel</button>
-            <button type="button" class="btn btn-modal-save" onclick="saveConfig()">Save</button>
+            <button type="button" class="btn btn-modal-cancel" id="btn-config-cancel">Cancel</button>
+            <button type="button" class="btn btn-modal-save" id="btn-config-save">Save</button>
         </div>
     </div>
 </div>
 
 <!-- File Browser Modal (z-index above all modals) -->
-<div class="modal-overlay" id="file-browser-modal" style="z-index:1200;">
+<div class="modal-overlay" id="file-browser-modal">
     <div class="modal" style="width:560px;">
         <div class="modal-header">
             <h2>Browse</h2>
-            <button type="button" class="modal-close" onclick="closeFileBrowser()" aria-label="Close">&times;</button>
+            <button type="button" class="modal-close" id="btn-fb-close" aria-label="Close">&times;</button>
         </div>
         <div class="file-browser-bar">
-            <button class="btn-sm btn-preset" onclick="fileBrowserUp()" title="Parent directory">&uarr; Up</button>
-            <input type="text" id="fb-path-input" class="fb-path-input" onkeydown="if(event.key==='Enter')fileBrowserGo(this.value)">
+            <button type="button" class="btn-sm btn-preset" id="btn-fb-up" title="Parent directory">&uarr; Up</button>
+            <input type="text" id="fb-path-input" class="fb-path-input">
         </div>
         <div class="modal-body" style="padding:0;">
             <div id="fb-entries" class="fb-entries"></div>
         </div>
         <div class="modal-buttons">
-            <button type="button" class="btn btn-modal-cancel" onclick="closeFileBrowser()">Cancel</button>
-            <button type="button" class="btn btn-modal-save" onclick="fileBrowserSelect()">Select This Folder</button>
+            <button type="button" class="btn btn-modal-cancel" id="btn-fb-cancel">Cancel</button>
+            <button type="button" class="btn btn-modal-save" id="btn-fb-select">Select This Folder</button>
         </div>
     </div>
 </div>
@@ -166,13 +259,12 @@
     <div class="modal">
         <div class="modal-header">
             <h2 id="modal-title">New Preset</h2>
-            <button type="button" class="modal-close" onclick="closePresetModal()" aria-label="Close">&times;</button>
+            <button type="button" class="modal-close" id="btn-preset-close" aria-label="Close">&times;</button>
         </div>
-        <form id="preset-form" onsubmit="savePreset(event)">
+        <form id="preset-form">
             <input type="hidden" id="modal-preset-id">
             <div class="modal-body">
 
-            <!-- Model & Memory -->
             <details class="modal-section" open>
                 <summary>Model &amp; Memory</summary>
                 <label class="modal-field" title="Display name for this preset">Name
@@ -180,9 +272,9 @@
                     <span class="field-error-msg">Name is required</span>
                 </label>
                 <label class="modal-field" title="Absolute path to the .gguf model file on disk">Model Path
-                    <div style="display:flex;gap:6px;">
-                        <input type="text" id="modal-model-path" required style="flex:1;">
-                        <button type="button" class="btn-sm btn-preset" onclick="openFileBrowser('modal-model-path','gguf')" title="Browse filesystem for .gguf files">Browse</button>
+                    <div class="field-row">
+                        <input type="text" id="modal-model-path" required>
+                        <button type="button" class="btn-sm btn-preset" id="browse-model-path" title="Browse filesystem for .gguf files">Browse</button>
                     </div>
                     <span class="field-error-msg">Model path is required</span>
                 </label>
@@ -197,7 +289,6 @@
                 </div>
             </details>
 
-            <!-- Context & KV Cache -->
             <details class="modal-section" open>
                 <summary>Context &amp; KV Cache</summary>
                 <label class="modal-field" title="Maximum context length in tokens. Larger values use more VRAM. Auto-enables YaRN scaling above 262144.">Context Size (-c)
@@ -221,7 +312,6 @@
                 </div>
             </details>
 
-            <!-- Batching & Slots -->
             <details class="modal-section" open>
                 <summary>Batching &amp; Slots</summary>
                 <div class="modal-row">
@@ -237,7 +327,6 @@
                 </div>
             </details>
 
-            <!-- GPU Distribution -->
             <details class="modal-section">
                 <summary>GPU Distribution</summary>
                 <label class="modal-field" title="VRAM distribution ratio across GPUs (e.g. '7,8,8,8' for 4 GPUs). Leave empty for single GPU.">Tensor Split (-ts)
@@ -257,7 +346,6 @@
                 </div>
             </details>
 
-            <!-- Threading -->
             <details class="modal-section">
                 <summary>Threading</summary>
                 <div class="modal-row">
@@ -270,10 +358,9 @@
                 </div>
             </details>
 
-            <!-- Rope Scaling -->
             <details class="modal-section">
                 <summary>Rope Scaling</summary>
-                <p style="font-size:0.72rem;color:#6a7585;margin-bottom:8px;">Leave empty for auto-YaRN when context &gt; 262144. Set explicitly to override.</p>
+                <p class="hint-text">Leave empty for auto-YaRN when context &gt; 262144. Set explicitly to override.</p>
                 <div class="modal-row">
                     <label class="modal-field" title="RoPE scaling method: yarn (for extended context), linear, or none. Auto-enabled as yarn for context > 262144 if left empty.">Rope Scaling
                         <select id="modal-rope-scaling">
@@ -292,7 +379,6 @@
                 </div>
             </details>
 
-            <!-- Speculative Decoding -->
             <details class="modal-section">
                 <summary>Speculative Decoding</summary>
                 <div class="modal-row modal-checks">
@@ -314,7 +400,6 @@
                 </label>
             </details>
 
-            <!-- Advanced -->
             <details class="modal-section">
                 <summary>Advanced</summary>
                 <div class="modal-row">
@@ -330,9 +415,9 @@
                 </label>
             </details>
 
-            </div><!-- /modal-body -->
+            </div>
             <div class="modal-buttons">
-                <button type="button" class="btn btn-modal-cancel" onclick="closePresetModal()">Cancel</button>
+                <button type="button" class="btn btn-modal-cancel" id="btn-preset-cancel">Cancel</button>
                 <button type="submit" class="btn btn-modal-save" id="btn-modal-save">Save</button>
             </div>
         </form>
