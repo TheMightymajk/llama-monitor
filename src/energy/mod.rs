@@ -149,9 +149,14 @@ impl EnergyState {
             is_inference,
         );
 
-        while self.daily.len() > 30 {
-            self.daily.pop_first();
-        }
+        self.prune_daily(now_local);
+    }
+
+    fn prune_daily(&mut self, now_local: DateTime<Local>) {
+        let Some(cutoff) = now_local.date_naive().checked_sub_days(Days::new(29)) else {
+            return;
+        };
+        self.daily.retain(|date, _| *date >= cutoff);
     }
 
     pub fn snapshot(&self, now_instant: Instant, now_local: DateTime<Local>) -> EnergySnapshot {
@@ -221,6 +226,7 @@ impl EnergyTotals {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::time::Duration;
 
     fn sample(id: &str, power: f32, util: f32) -> GpuPowerSample {
@@ -334,6 +340,42 @@ mod tests {
         let s = e.snapshot(t0, local);
         assert!(s.lifetime.inference_energy_kwh > 0.0);
         assert_eq!(s.lifetime.inference_energy_kwh, s.lifetime.energy_kwh);
+    }
+
+    #[test]
+    fn prune_drops_daily_buckets_older_than_30_calendar_days() {
+        let mut e = EnergyState::new_default();
+        let t0 = Instant::now();
+        let today = Local::now().date_naive();
+        let old_date = today.checked_sub_days(Days::new(35)).expect("valid old date");
+        let old_local = Local
+            .from_local_datetime(&old_date.and_hms_opt(12, 0, 0).unwrap())
+            .single()
+            .expect("valid local datetime");
+        let today_local = Local
+            .from_local_datetime(&today.and_hms_opt(12, 0, 0).unwrap())
+            .single()
+            .expect("valid local datetime");
+
+        e.ingest(&[sample("0", 100.0, 0.0)], idle_busy(), t0, old_local);
+        e.ingest(
+            &[sample("0", 100.0, 0.0)],
+            idle_busy(),
+            t0 + Duration::from_millis(500),
+            old_local,
+        );
+        assert!(e.snapshot(t0, old_local).today.energy_kwh > 0.0);
+
+        e.ingest(&[sample("0", 100.0, 0.0)], idle_busy(), t0, today_local);
+        e.ingest(
+            &[sample("0", 100.0, 0.0)],
+            idle_busy(),
+            t0 + Duration::from_millis(500),
+            today_local,
+        );
+
+        assert_eq!(e.snapshot(t0, old_local).today.energy_kwh, 0.0);
+        assert!(e.snapshot(t0, today_local).today.energy_kwh > 0.0);
     }
 
     #[test]
