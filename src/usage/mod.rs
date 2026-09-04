@@ -320,10 +320,12 @@ mod tests {
 
     #[test]
     fn snapshot_includes_cache_in_savings() {
-        let mut s = UsageStats::default();
-        s.prompt_tokens = 500_000;
-        s.cached_tokens = 500_000;
-        s.predicted_tokens = 0;
+        let s = UsageStats {
+            prompt_tokens: 500_000,
+            cached_tokens: 500_000,
+            predicted_tokens: 0,
+            ..Default::default()
+        };
         let snap = s.snapshot();
         assert!((snap.saved_luna_usd - 0.20).abs() < 1e-9);
         assert!((snap.cache_hit_ratio - 0.5).abs() < 1e-9);

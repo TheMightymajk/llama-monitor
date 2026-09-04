@@ -1,0 +1,12 @@
+{
+  "system_prompt": "",
+  "default_generation_settings": {
+    "n_ctx": 8192,
+    "n_predict": -1,
+    "model": "/opt/models/legacy-model.Q5_K_M.gguf",
+    "seed": -1,
+    "temperature": 0.8
+  },
+  "total_slots": 2,
+  "chat_template": ""
+}

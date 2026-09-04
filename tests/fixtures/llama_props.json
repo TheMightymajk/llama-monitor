@@ -1,0 +1,25 @@
+{
+  "default_generation_settings": {
+    "id": 0,
+    "id_task": -1,
+    "n_ctx": 131072,
+    "speculative": false,
+    "is_processing": false,
+    "params": {
+      "n_predict": -1,
+      "temperature": 0.8,
+      "unknown_future_field": true
+    },
+    "prompt": ""
+  },
+  "total_slots": 1,
+  "model_path": "/models/Qwen3.8-27B-UD-Q4_K_M.gguf",
+  "model_alias": "Qwen3.8-27B-UD-Q4_K_M",
+  "chat_template": "...",
+  "modalities": {
+    "vision": false
+  },
+  "build_info": "b9999-abcdef",
+  "is_sleeping": false,
+  "extra_unknown_top_level": 42
+}

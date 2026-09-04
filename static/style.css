@@ -188,6 +188,7 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.85rem; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.spec-grid .spec-full { grid-column: 1 / -1; }
 .empty-hint { font-size: 0.75rem; color: var(--text-dim); margin-top: 10px; }
 .hint-text { font-size: 0.72rem; color: var(--text-dim); margin-top: 2px; }
 .summary-aside { font-weight: 400; color: var(--text-dim); font-size: 0.72rem; }

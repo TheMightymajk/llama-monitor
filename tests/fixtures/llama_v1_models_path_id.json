@@ -1,0 +1,12 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "/models/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+      "object": "model",
+      "created": 1735142223,
+      "owned_by": "llamacpp",
+      "meta": null
+    }
+  ]
+}

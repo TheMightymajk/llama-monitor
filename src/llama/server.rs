@@ -293,6 +293,10 @@ pub async fn stop_server(state: &AppState) -> Result<()> {
         *m = crate::llama::metrics::LlamaMetrics::default();
     }
     {
+        let mut rm = state.running_model.lock().unwrap();
+        rm.clear();
+    }
+    {
         let mut usage = state.usage.lock().unwrap();
         let _ = usage.maybe_save(&state.usage_path, true);
     }

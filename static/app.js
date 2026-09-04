@@ -22,6 +22,7 @@ let prevLogLen = 0;
 let serverStartedAt = null;
 let wsConnected = false;
 let settingsSaveTimer = null;
+let lastRunningModel = null;
 
 function collectSettings() {
     return {
@@ -581,28 +582,49 @@ function dash(v) {
     return String(v);
 }
 
+function sourcedVal(field) {
+    if (!field || field.value == null || field.value === '') return null;
+    return field.value;
+}
+
 function refreshModelCard() {
     const p = selectedPreset();
-    const meta = ggufMeta(p.model_path);
-    const displayName = p.name || meta.name;
-    text('hero-model', displayName || '—');
-    text('hero-model-sub', serverRunning ? 'from selected preset' : 'selected preset');
-    text('spec-source', 'preset');
-    text('spec-name', dash(displayName));
-    text('spec-gguf', meta.filename);
-    text('spec-quant', meta.quant);
-    text('spec-size', '—');
-    text('spec-ctx', p.context_size ? Number(p.context_size).toLocaleString() : '—');
+    const presetLabel = p.name || ggufMeta(p.model_path).name || '—';
+    text('spec-preset', presetLabel);
+
+    const rm = lastRunningModel;
+    if (rm && rm.detected) {
+        const name = sourcedVal(rm.name) || sourcedVal(rm.model_id) || sourcedVal(rm.gguf_file) || '—';
+        text('hero-model', name);
+        text('hero-model-sub', 'detected from llama-server');
+        const src = rm.primary_source || 'props';
+        text('spec-source', src === 'props' || src === 'models' ? 'Detected from llama-server' : String(src));
+        text('spec-name', dash(sourcedVal(rm.name) || sourcedVal(rm.model_id)));
+        text('spec-gguf', dash(sourcedVal(rm.gguf_file)));
+        text('spec-model-id', dash(sourcedVal(rm.model_id)));
+        text('spec-quant', dash(sourcedVal(rm.quant)));
+        text('spec-ctx', rm.context_size && rm.context_size.value != null
+            ? Number(rm.context_size.value).toLocaleString() : '—');
+        text('spec-ctx-native', rm.native_context && rm.native_context.value != null
+            ? Number(rm.native_context.value).toLocaleString() : '—');
+        text('spec-slots', rm.total_slots && rm.total_slots.value != null
+            ? String(rm.total_slots.value) : '—');
+        text('spec-model-path', dash(sourcedVal(rm.model_path)));
+        return;
+    }
+
+    // No live detection: show selected preset as reference only (not as "running")
+    text('hero-model', presetLabel);
+    text('hero-model-sub', 'selected preset');
+    text('spec-source', 'selected preset');
+    text('spec-name', '—');
+    text('spec-gguf', '—');
+    text('spec-model-id', '—');
+    text('spec-quant', '—');
+    text('spec-ctx', '—');
     text('spec-ctx-native', '—');
-    text('spec-ngl', p.gpu_layers == null ? '99' : String(p.gpu_layers));
-    text('spec-batch', (p.batch_size || 2048) + ' / ' + (p.ubatch_size || p.batch_size || 2048));
-    text('spec-slots', dash(p.parallel_slots || 1));
-    text('spec-kv', (p.ctk || 'q8_0') + ' / ' + (p.ctv || 'f16'));
-    text('spec-fa', p.flash_attn || 'default');
-    let spec = 'off';
-    if (p.ngram_spec) spec = 'ngram-mod';
-    else if (p.draft_model) spec = 'draft model';
-    text('spec-spec', spec);
+    text('spec-slots', '—');
+    text('spec-model-path', '—');
 }
 
 async function doStart() {
@@ -768,6 +790,8 @@ function applyWsPayload(d) {
     text('hero-reqs', l.requests_processing != null ? String(l.requests_processing) : '—');
 
     applyUsage(d.usage);
+    lastRunningModel = d.running_model || null;
+    refreshModelCard();
 
     const statusEl = $('m-status');
     statusEl.textContent = l.status || '—';

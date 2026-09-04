@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use crate::gpu::GpuMetrics;
 use crate::gpu::env::GpuEnv;
 use crate::llama::metrics::LlamaMetrics;
+use crate::llama::running_model::RunningModelInfo;
 use crate::llama::server::ServerConfig;
 use crate::models::DiscoveredModel;
 use crate::presets::ModelPreset;
@@ -68,6 +69,7 @@ pub fn save_ui_settings(path: &Path, settings: &UiSettings) -> anyhow::Result<()
 pub struct AppState {
     pub gpu_metrics: Arc<Mutex<BTreeMap<String, GpuMetrics>>>,
     pub llama_metrics: Arc<Mutex<LlamaMetrics>>,
+    pub running_model: Arc<Mutex<RunningModelInfo>>,
     pub server_logs: Arc<Mutex<VecDeque<String>>>,
     pub server_child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
     pub server_running: Arc<Mutex<bool>>,
@@ -107,6 +109,7 @@ impl AppState {
         Self {
             gpu_metrics: Arc::new(Mutex::new(BTreeMap::new())),
             llama_metrics: Arc::new(Mutex::new(LlamaMetrics::default())),
+            running_model: Arc::new(Mutex::new(RunningModelInfo::default())),
             server_logs: Arc::new(Mutex::new(VecDeque::new())),
             server_child: Arc::new(tokio::sync::Mutex::new(None)),
             server_running: Arc::new(Mutex::new(false)),

@@ -3,14 +3,22 @@ use std::time::Duration;
 use crate::state::AppState;
 
 use super::metrics::parse_prometheus_metrics;
+use super::running_model::{
+    HealthStickiness, ModelDiscoveryPartial, merge_running_model, parse_props_json,
+    parse_v1_models_json,
+};
 
 const LLAMA_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const HEALTH_FAIL_CLEAR_THRESHOLD: u32 = 3;
 
 pub async fn llama_metrics_poller(state: AppState) {
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
+        .timeout(REQUEST_TIMEOUT)
         .build()
         .unwrap();
+
+    let mut health_stick = HealthStickiness::new(HEALTH_FAIL_CLEAR_THRESHOLD);
 
     loop {
         // Determine port: from config if started via UI, else default 8080
@@ -45,16 +53,23 @@ pub async fn llama_metrics_poller(state: AppState) {
             false
         };
 
-        if !server_reachable {
+        if health_stick.on_health_result(server_reachable) {
             {
                 let mut m = state.llama_metrics.lock().unwrap();
                 *m = super::metrics::LlamaMetrics::default();
             }
+            {
+                let mut rm = state.running_model.lock().unwrap();
+                rm.clear();
+            }
+        }
+
+        if !server_reachable {
             tokio::time::sleep(LLAMA_POLL_INTERVAL).await;
             continue;
         }
 
-        // Poll /metrics
+        // Poll /metrics — failures must not abort the rest of the loop
         if let Ok(resp) = client.get(format!("{base}/metrics")).send().await
             && let Ok(body) = resp.text().await
         {
@@ -127,6 +142,70 @@ pub async fn llama_metrics_poller(state: AppState) {
             }
         }
 
+        // Discover running model: /props then /v1/models (errors are non-fatal)
+        refresh_running_model(&client, &base, &state).await;
+
         tokio::time::sleep(LLAMA_POLL_INTERVAL).await;
     }
+}
+
+async fn refresh_running_model(client: &reqwest::Client, base: &str, state: &AppState) {
+    let mut props_partial: Option<ModelDiscoveryPartial> = None;
+    let mut models_partial: Option<ModelDiscoveryPartial> = None;
+
+    match client.get(format!("{base}/props")).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(body) = resp.text().await {
+                match parse_props_json(&body) {
+                    Ok(p) => props_partial = Some(p),
+                    Err(e) => eprintln!("[warn] /props parse: {e}"),
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("[warn] /props request: {e}"),
+    }
+
+    match client.get(format!("{base}/v1/models")).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(body) = resp.text().await {
+                match parse_v1_models_json(&body) {
+                    Ok(p) => models_partial = Some(p),
+                    Err(e) => eprintln!("[warn] /v1/models parse: {e}"),
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("[warn] /v1/models request: {e}"),
+    }
+
+    // If neither live endpoint worked, keep last good RunningModelInfo (sticky).
+    if props_partial.is_none() && models_partial.is_none() {
+        return;
+    }
+
+    let process = state.server_config.lock().unwrap().clone();
+
+    // Preset fallback only when live sources left gaps — still recorded with source=preset.
+    let (preset_name, preset_path, preset_ctx) = {
+        let ui = state.ui_settings.lock().unwrap();
+        let presets = state.presets.lock().unwrap();
+        let preset = presets.iter().find(|p| p.id == ui.preset_id);
+        (
+            preset.map(|p| p.name.clone()),
+            preset.map(|p| p.model_path.clone()),
+            preset.map(|p| p.context_size),
+        )
+    };
+
+    let info = merge_running_model(
+        props_partial.as_ref(),
+        models_partial.as_ref(),
+        process.as_ref(),
+        preset_name.as_deref(),
+        preset_path.as_deref(),
+        preset_ctx,
+    );
+
+    *state.running_model.lock().unwrap() = info;
 }

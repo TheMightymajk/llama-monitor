@@ -30,8 +30,17 @@ pub fn ws_route(
                             let running = *state.server_running.lock().unwrap();
                             let started_at = *state.server_started_at.lock().unwrap();
                             let usage = state.usage.lock().unwrap().snapshot();
-                            build_ws_payload(&gpu, &llama, &logs, running, started_at, &usage)
-                                .to_string()
+                            let running_model = state.running_model.lock().unwrap().clone();
+                            build_ws_payload(
+                                &gpu,
+                                &llama,
+                                &logs,
+                                running,
+                                started_at,
+                                &usage,
+                                &running_model,
+                            )
+                            .to_string()
                         };
                         if ws_tx.send(Message::text(&json)).await.is_err() {
                             break;
@@ -53,6 +62,7 @@ pub fn build_ws_payload(
     server_running: bool,
     server_started_at: Option<u64>,
     usage: &crate::usage::UsageSnapshot,
+    running_model: &crate::llama::running_model::RunningModelInfo,
 ) -> serde_json::Value {
     serde_json::json!({
         "gpu": gpu,
@@ -61,6 +71,7 @@ pub fn build_ws_payload(
         "server_running": server_running,
         "server_started_at": server_started_at,
         "usage": usage,
+        "running_model": running_model,
     })
 }
 
@@ -74,6 +85,10 @@ mod tests {
         crate::usage::UsageStats::default().snapshot()
     }
 
+    fn empty_running_model() -> crate::llama::running_model::RunningModelInfo {
+        crate::llama::running_model::RunningModelInfo::default()
+    }
+
     #[test]
     fn ws_payload_includes_started_at_when_running() {
         let payload = build_ws_payload(
@@ -83,6 +98,7 @@ mod tests {
             true,
             Some(1_700_000_000),
             &empty_usage(),
+            &empty_running_model(),
         );
         assert_eq!(payload["server_running"], true);
         assert_eq!(payload["server_started_at"], 1_700_000_000);
@@ -90,7 +106,9 @@ mod tests {
         assert!(payload.get("llama").is_some());
         assert!(payload.get("logs").is_some());
         assert!(payload.get("usage").is_some());
+        assert!(payload.get("running_model").is_some());
         assert_eq!(payload["usage"]["prompt_tokens"], 0);
+        assert_eq!(payload["running_model"]["detected"], false);
     }
 
     #[test]
@@ -102,6 +120,7 @@ mod tests {
             false,
             None,
             &empty_usage(),
+            &empty_running_model(),
         );
         assert_eq!(payload["server_running"], false);
         assert!(payload["server_started_at"].is_null());
