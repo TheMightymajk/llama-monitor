@@ -795,9 +795,12 @@ function setWsStatus(connected) {
 }
 
 function gpuSummary(gpu) {
-    const cards = Object.values(gpu || {});
+    if (gpu == null) {
+        return { util: null, vramUsed: 0, vramTotal: 0, temp: null, unavailable: true };
+    }
+    const cards = Object.values(gpu);
     if (!cards.length) {
-        return { util: null, vramUsed: 0, vramTotal: 0, temp: null };
+        return { util: null, vramUsed: 0, vramTotal: 0, temp: null, unavailable: false };
     }
     let vramUsed = 0, vramTotal = 0, temp = 0, load = 0;
     for (const c of cards) {
@@ -806,7 +809,7 @@ function gpuSummary(gpu) {
         temp = Math.max(temp, c.temp || 0);
         load = Math.max(load, c.load || 0);
     }
-    return { util: load, vramUsed, vramTotal, temp };
+    return { util: load, vramUsed, vramTotal, temp, unavailable: false };
 }
 
 function fmtMib(mib) {
@@ -953,6 +956,16 @@ async function resetEnergy() {
     }
 }
 
+function fmtLiveTps(v) {
+    if (v == null || Number.isNaN(Number(v))) return '—';
+    return Number(v).toFixed(1) + ' t/s';
+}
+
+function fmtLiveTpsHero(v) {
+    if (v == null || Number.isNaN(Number(v))) return '—';
+    return Number(v).toFixed(1);
+}
+
 function applyWsPayload(d) {
     serverRunning = d.server_running;
     serverStartedAt = d.server_started_at || null;
@@ -964,19 +977,23 @@ function applyWsPayload(d) {
     text('uptime-text', formatUptime(serverStartedAt));
 
     const l = d.llama || {};
-    const promptTps = l.prompt_tokens_per_sec > 0 ? l.prompt_tokens_per_sec.toFixed(1) : '—';
-    const genTps = l.generation_tokens_per_sec > 0 ? l.generation_tokens_per_sec.toFixed(1) : '—';
-    text('m-prompt', l.prompt_tokens_per_sec > 0 ? l.prompt_tokens_per_sec.toFixed(1) + ' t/s' : '—');
-    text('m-gen', l.generation_tokens_per_sec > 0 ? l.generation_tokens_per_sec.toFixed(1) + ' t/s' : '—');
-    text('hero-prompt', promptTps);
-    text('hero-gen', genTps);
-    if (l.kv_cache_max > 0) {
-        const pct = ((l.kv_cache_tokens / l.kv_cache_max) * 100).toFixed(1);
+    text('m-prompt', fmtLiveTps(l.prompt_tokens_per_sec));
+    text('m-gen', fmtLiveTps(l.generation_tokens_per_sec));
+    text('hero-prompt', fmtLiveTpsHero(l.prompt_tokens_per_sec));
+    text('hero-gen', fmtLiveTpsHero(l.generation_tokens_per_sec));
+    if (l.kv_cache_tokens != null && l.kv_cache_max != null) {
+        const pct = l.kv_cache_max > 0
+            ? ((l.kv_cache_tokens / l.kv_cache_max) * 100).toFixed(1)
+            : '0.0';
         text('m-ctx', l.kv_cache_tokens + ' / ' + l.kv_cache_max + ' (' + pct + '%)');
     } else {
         text('m-ctx', '—');
     }
-    text('m-slots', l.slots_idle + l.slots_processing > 0 ? l.slots_idle + ' idle / ' + l.slots_processing + ' busy' : '—');
+    if (l.slots_idle != null && l.slots_processing != null) {
+        text('m-slots', l.slots_idle + ' idle / ' + l.slots_processing + ' busy');
+    } else {
+        text('m-slots', '—');
+    }
     text('hero-reqs', l.requests_processing != null ? String(l.requests_processing) : '—');
 
     applyUsage(d.usage);
@@ -989,42 +1006,61 @@ function applyWsPayload(d) {
     statusEl.className = 'metric-value ' + (l.status === 'ok' ? 'status-ok' : l.status === 'no slot available' ? 'status-busy' : (l.status ? 'status-err' : ''));
 
     const summary = gpuSummary(d.gpu);
-    if (summary.util == null) {
+    const gpuEmpty = $('gpu-empty');
+    if (summary.unavailable) {
         text('hero-gpu', '—');
         text('hero-vram', '—');
         text('hero-vram-sub', 'GPU memory');
         text('hero-temp', '—');
-        $('gpu-empty').style.display = '';
+        gpuEmpty.style.display = '';
+        gpuEmpty.textContent = 'GPU metrics unavailable (rocm-smi / nvidia-smi failed).';
+    } else if (summary.util == null) {
+        text('hero-gpu', '—');
+        text('hero-vram', '—');
+        text('hero-vram-sub', 'GPU memory');
+        text('hero-temp', '—');
+        gpuEmpty.style.display = '';
+        gpuEmpty.textContent = 'No GPU metrics on this machine. AMD R9700 / ROCm data appears when amd-smi or rocm-smi is available.';
     } else {
         text('hero-gpu', summary.util + '%');
         const vpct = summary.vramTotal > 0 ? Math.round((summary.vramUsed / summary.vramTotal) * 100) : 0;
         text('hero-vram', fmtMib(summary.vramUsed) + ' GB');
         text('hero-vram-sub', fmtMib(summary.vramTotal) + ' GB total · ' + vpct + '%');
         text('hero-temp', Math.round(summary.temp) + '°C');
-        $('gpu-empty').style.display = 'none';
+        gpuEmpty.style.display = 'none';
     }
 
     const tbody = $('gpu-rows');
     tbody.replaceChildren();
     Object.entries(d.gpu || {}).forEach(([card, m]) => {
-        const capped = m.power_consumption >= m.power_limit && m.power_limit > 0;
+        const pwr = m.power_consumption;
+        const capped = pwr != null && pwr >= m.power_limit && m.power_limit > 0;
         const vpct = m.vram_total > 0 ? Math.round((m.vram_used / m.vram_total) * 100) : 0;
+        let powerText = '—';
+        let powerTitle = 'Power reading unavailable';
+        if (pwr != null) {
+            powerText = capped
+                ? pwr.toFixed(1) + 'W!'
+                : pwr.toFixed(1) + 'W / ' + m.power_limit + 'W';
+            powerTitle = m.power_kind === 'average'
+                ? 'Average package power (not instantaneous socket power)'
+                : 'Current GPU power';
+        }
         const tr = document.createElement('tr');
         const cells = [
-            ['card value', card],
-            ['value temp', Math.round(m.temp) + 'C'],
-            ['value load', m.load + '%'],
-            ['value vram', vpct + '%'],
-            [capped ? 'value capped' : 'value power', capped
-                ? m.power_consumption.toFixed(1) + 'W!'
-                : m.power_consumption.toFixed(1) + 'W / ' + m.power_limit + 'W'],
-            ['value sclk', m.sclk_mhz + 'MHz'],
-            ['value mclk', m.mclk_mhz + 'MHz'],
+            ['card value', card, null],
+            ['value temp', Math.round(m.temp) + 'C', null],
+            ['value load', m.load + '%', null],
+            ['value vram', vpct + '%', null],
+            [capped ? 'value capped' : 'value power', powerText, powerTitle],
+            ['value sclk', m.sclk_mhz + 'MHz', null],
+            ['value mclk', m.mclk_mhz + 'MHz', null],
         ];
-        cells.forEach(([cls, value]) => {
+        cells.forEach(([cls, value, title]) => {
             const td = document.createElement('td');
             td.className = cls;
             td.textContent = value;
+            if (title) td.title = title;
             tr.appendChild(td);
         });
         tbody.appendChild(tr);
@@ -1034,7 +1070,9 @@ function applyWsPayload(d) {
 
     const badgeParts = [];
     if (serverRunning) badgeParts.push('Running');
-    if (l.generation_tokens_per_sec > 0) badgeParts.push(l.generation_tokens_per_sec.toFixed(1) + 't/s');
+    if (l.generation_tokens_per_sec != null && l.generation_tokens_per_sec > 0) {
+        badgeParts.push(l.generation_tokens_per_sec.toFixed(1) + 't/s');
+    }
     const gpuEntries = Object.entries(d.gpu || {});
     if (gpuEntries.length > 0) badgeParts.push(Math.max(...gpuEntries.map(([, m]) => m.temp)).toFixed(0) + 'C');
     text('badge-server', badgeParts.length ? ' ' + badgeParts.join(' · ') : ' Stopped');
