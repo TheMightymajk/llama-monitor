@@ -2,9 +2,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
+use serde::Deserialize;
 use warp::Filter;
 
 use crate::config::AppConfig;
+use crate::energy;
 use crate::gpu::env::{self as gpu_env, GPU_ARCHITECTURES, GpuEnv};
 use crate::llama::server::{self, ServerConfig};
 use crate::models;
@@ -31,6 +33,8 @@ pub fn api_routes(
     let browse = api_browse();
     let chat = api_chat(state.clone());
     let usage_reset = api_usage_reset(state.clone());
+    let put_energy_settings = api_put_energy_settings(state.clone());
+    let reset_energy_lifetime = api_reset_energy_lifetime(state.clone());
     let clear_logs = api_clear_logs(state);
 
     start
@@ -49,6 +53,8 @@ pub fn api_routes(
         .or(browse)
         .or(chat)
         .or(usage_reset)
+        .or(put_energy_settings)
+        .or(reset_energy_lifetime)
         .or(clear_logs)
 }
 
@@ -437,6 +443,100 @@ fn api_usage_reset(
         })
 }
 
+#[derive(Deserialize)]
+struct EnergySettingsBody {
+    price_per_kwh: f64,
+    inference_util_threshold: f64,
+}
+
+#[derive(Deserialize)]
+struct EnergyResetBody {
+    #[serde(default)]
+    confirm: bool,
+}
+
+fn api_put_energy_settings(
+    state: AppState,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path!("api" / "energy" / "settings")
+        .and(warp::put())
+        .and(warp::body::json())
+        .and_then(move |body: EnergySettingsBody| {
+            let state = state.clone();
+            async move {
+                let validation = if body.inference_util_threshold.is_finite()
+                    && (0.0..=100.0).contains(&body.inference_util_threshold)
+                {
+                    state
+                        .energy
+                        .lock()
+                        .unwrap()
+                        .apply_settings(body.price_per_kwh, body.inference_util_threshold as f32)
+                } else {
+                    Err("Inference utilization threshold must be between 0 and 100".to_string())
+                };
+
+                if let Err(error) = validation {
+                    return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({"ok": false, "error": error})),
+                        warp::http::StatusCode::BAD_REQUEST,
+                    ));
+                }
+
+                let save_result =
+                    energy::force_save(&state.energy, &state.energy_path, &state.energy_save_gate)
+                        .await;
+                Ok(match save_result {
+                    Ok(()) => warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({"ok": true})),
+                        warp::http::StatusCode::OK,
+                    ),
+                    Err(error) => warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({"ok": false, "error": error})),
+                        warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                })
+            }
+        })
+}
+
+fn api_reset_energy_lifetime(
+    state: AppState,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path!("api" / "energy" / "reset-lifetime")
+        .and(warp::post())
+        .and(warp::body::json())
+        .and_then(move |body: EnergyResetBody| {
+            let state = state.clone();
+            async move {
+                if !body.confirm {
+                    return Ok::<_, warp::Rejection>(warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({
+                            "ok": false,
+                            "error": "Reset requires confirm: true"
+                        })),
+                        warp::http::StatusCode::BAD_REQUEST,
+                    ));
+                }
+
+                state.energy.lock().unwrap().reset_lifetime();
+                let save_result =
+                    energy::force_save(&state.energy, &state.energy_path, &state.energy_save_gate)
+                        .await;
+                Ok(match save_result {
+                    Ok(()) => warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({"ok": true})),
+                        warp::http::StatusCode::OK,
+                    ),
+                    Err(error) => warp::reply::with_status(
+                        warp::reply::json(&serde_json::json!({"ok": false, "error": error})),
+                        warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                })
+            }
+        })
+}
+
 fn api_chat(
     state: AppState,
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
@@ -528,4 +628,150 @@ fn api_chat(
                 }
             },
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::energy::EnergyState;
+    use crate::gpu::env::GpuEnv;
+    use crate::state::UiSettings;
+    use crate::usage::UsageStats;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn test_state() -> AppState {
+        let sequence = TEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let base = std::env::temp_dir().join(format!(
+            "llama-monitor-energy-api-{}-{sequence}",
+            std::process::id()
+        ));
+        AppState::new(
+            Vec::new(),
+            base.join("presets.json"),
+            None,
+            GpuEnv::default(),
+            base.join("gpu-env.json"),
+            UiSettings::default(),
+            base.join("ui-settings.json"),
+            UsageStats::default(),
+            base.join("usage.json"),
+            EnergyState::new_default(),
+            base.join("energy.json"),
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn energy_settings_reject_invalid_values_with_400() {
+        let state = test_state();
+        let response = warp::test::request()
+            .method("PUT")
+            .path("/api/energy/settings")
+            .json(&serde_json::json!({
+                "price_per_kwh": -1.0,
+                "inference_util_threshold": 20.0
+            }))
+            .reply(&api_put_energy_settings(state.clone()))
+            .await;
+
+        assert_eq!(response.status(), warp::http::StatusCode::BAD_REQUEST);
+        assert_eq!(
+            state
+                .energy
+                .lock()
+                .unwrap()
+                .snapshot(std::time::Instant::now(), chrono::Local::now())
+                .price_per_kwh,
+            1.0
+        );
+    }
+
+    #[tokio::test]
+    async fn energy_settings_apply_and_force_save() {
+        let state = test_state();
+        let response = warp::test::request()
+            .method("PUT")
+            .path("/api/energy/settings")
+            .json(&serde_json::json!({
+                "price_per_kwh": 1.25,
+                "inference_util_threshold": 42.0
+            }))
+            .reply(&api_put_energy_settings(state.clone()))
+            .await;
+
+        assert_eq!(response.status(), warp::http::StatusCode::OK);
+        let snapshot = state
+            .energy
+            .lock()
+            .unwrap()
+            .snapshot(std::time::Instant::now(), chrono::Local::now());
+        assert_eq!(snapshot.price_per_kwh, 1.25);
+        assert_eq!(snapshot.inference_util_threshold, 42.0);
+        assert!(state.energy_path.exists());
+        std::fs::remove_dir_all(state.energy_path.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn energy_reset_requires_explicit_confirmation() {
+        let state = test_state();
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/energy/reset-lifetime")
+            .json(&serde_json::json!({"confirm": false}))
+            .reply(&api_reset_energy_lifetime(state))
+            .await;
+
+        assert_eq!(response.status(), warp::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn confirmed_energy_reset_clears_and_force_saves() {
+        let state = test_state();
+        let now = std::time::Instant::now();
+        let local = chrono::Local::now();
+        let sample = crate::energy::GpuPowerSample {
+            id: "0".to_string(),
+            power_w: 100.0,
+            utilization: 50.0,
+        };
+        let busy = crate::energy::BusyFlags {
+            requests_processing: 1,
+            slots_processing: 0,
+            health_ok: true,
+        };
+        {
+            let mut energy = state.energy.lock().unwrap();
+            energy.ingest(std::slice::from_ref(&sample), busy, now, local);
+            energy.ingest(
+                std::slice::from_ref(&sample),
+                busy,
+                now + std::time::Duration::from_millis(500),
+                local,
+            );
+        }
+
+        let response = warp::test::request()
+            .method("POST")
+            .path("/api/energy/reset-lifetime")
+            .json(&serde_json::json!({"confirm": true}))
+            .reply(&api_reset_energy_lifetime(state.clone()))
+            .await;
+
+        assert_eq!(response.status(), warp::http::StatusCode::OK);
+        assert_eq!(
+            state
+                .energy
+                .lock()
+                .unwrap()
+                .snapshot(now, local)
+                .lifetime
+                .energy_kwh,
+            0.0
+        );
+        assert!(state.energy_path.exists());
+        std::fs::remove_dir_all(state.energy_path.parent().unwrap()).unwrap();
+    }
 }

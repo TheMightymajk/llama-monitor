@@ -32,6 +32,11 @@ pub fn ws_route(
                             let started_at = *state.server_started_at.lock().unwrap();
                             let usage = state.usage.lock().unwrap().snapshot();
                             let running_model = state.running_model.lock().unwrap().clone();
+                            let energy = state
+                                .energy
+                                .lock()
+                                .unwrap()
+                                .snapshot(std::time::Instant::now(), chrono::Local::now());
                             build_ws_payload(
                                 &gpu,
                                 &llama,
@@ -41,6 +46,7 @@ pub fn ws_route(
                                 started_at,
                                 &usage,
                                 &running_model,
+                                &energy,
                             )
                             .to_string()
                         };
@@ -67,6 +73,7 @@ pub fn build_ws_payload(
     server_started_at: Option<u64>,
     usage: &crate::usage::UsageSnapshot,
     running_model: &crate::llama::running_model::RunningModelInfo,
+    energy: &crate::energy::EnergySnapshot,
 ) -> serde_json::Value {
     serde_json::json!({
         "gpu": gpu,
@@ -77,6 +84,7 @@ pub fn build_ws_payload(
         "server_started_at": server_started_at,
         "usage": usage,
         "running_model": running_model,
+        "energy": energy,
     })
 }
 
@@ -95,6 +103,11 @@ mod tests {
         crate::llama::running_model::RunningModelInfo::default()
     }
 
+    fn empty_energy() -> crate::energy::EnergySnapshot {
+        crate::energy::EnergyState::new_default()
+            .snapshot(std::time::Instant::now(), chrono::Local::now())
+    }
+
     #[test]
     fn ws_payload_includes_started_at_when_running() {
         let payload = build_ws_payload(
@@ -106,12 +119,15 @@ mod tests {
             Some(1_700_000_000),
             &empty_usage(),
             &empty_running_model(),
+            &empty_energy(),
         );
         assert_eq!(payload["server_running"], true);
         assert_eq!(payload["server_started_at"], 1_700_000_000);
         assert!(payload.get("log_source").is_some());
         assert_eq!(payload["log_source"]["kind"], "none");
         assert_eq!(payload["running_model"]["detected"], false);
+        assert_eq!(payload["energy"]["currency"], "PLN");
+        assert_eq!(payload["energy"]["available"], false);
     }
 
     #[test]
@@ -125,6 +141,7 @@ mod tests {
             None,
             &empty_usage(),
             &empty_running_model(),
+            &empty_energy(),
         );
         assert_eq!(payload["server_running"], false);
         assert!(payload["server_started_at"].is_null());

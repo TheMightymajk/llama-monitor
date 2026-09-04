@@ -32,6 +32,7 @@ pub struct EnergyTotals {
     pub inference_cost_pln: f64,
 }
 
+#[derive(Clone, Serialize)]
 pub struct EnergySnapshot {
     pub available: bool,
     pub telemetry_stale: bool,
@@ -39,6 +40,7 @@ pub struct EnergySnapshot {
     pub currency: String,
     pub price_per_kwh: f64,
     pub inference_util_threshold: f32,
+    pub timezone_label: String,
     pub session: EnergyTotals,
     pub today: EnergyTotals,
     pub last_7_days: EnergyTotals,
@@ -448,6 +450,7 @@ impl EnergyState {
             currency: "PLN".to_string(),
             price_per_kwh: self.price_per_kwh,
             inference_util_threshold: self.inference_util_threshold,
+            timezone_label: now_local.offset().to_string(),
             session: self.session.clone(),
             today,
             last_7_days,
@@ -794,6 +797,24 @@ mod tests {
         let snapshot = e.snapshot(Instant::now(), Local::now());
         assert_eq!(snapshot.price_per_kwh, 1.0);
         assert_eq!(snapshot.inference_util_threshold, 20.0);
+    }
+
+    #[test]
+    fn snapshot_serializes_with_public_websocket_shape() {
+        let snapshot = EnergyState::new_default().snapshot(Instant::now(), Local::now());
+
+        let json = serde_json::to_value(snapshot).unwrap();
+
+        assert_eq!(json["available"], false);
+        assert_eq!(json["telemetry_stale"], true);
+        assert_eq!(json["currency"], "PLN");
+        assert!(json["timezone_label"].is_string());
+        assert!(json["session"].is_object());
+        assert!(json["today"].is_object());
+        assert!(json["last_7_days"].is_object());
+        assert!(json["lifetime"].is_object());
+        assert!(json.get("first_measurement_at").is_some());
+        assert!(json.get("last_measurement_at").is_some());
     }
 
     #[test]

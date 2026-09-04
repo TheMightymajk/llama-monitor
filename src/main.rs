@@ -135,7 +135,6 @@ async fn main() -> Result<()> {
     // Detect and start GPU poller
     let backend = gpu::detect_backend(&app_config.gpu_backend);
     let ingest_enabled = Arc::new(AtomicBool::new(true));
-    let energy_save_gate = Arc::new(tokio::sync::Mutex::new(()));
     {
         let gpu = state.gpu_metrics.clone();
         let llama_metrics = state.llama_metrics.clone();
@@ -186,7 +185,7 @@ async fn main() -> Result<()> {
     let energy_save_task = {
         let energy = state.energy.clone();
         let path = state.energy_path.clone();
-        let save_gate = energy_save_gate.clone();
+        let save_gate = state.energy_save_gate.clone();
         let ingest_enabled = ingest_enabled.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(ENERGY_SAVE_INTERVAL);
@@ -221,7 +220,7 @@ async fn main() -> Result<()> {
     println!("[info] Llama Monitor running on http://{host}:{port}");
     let shutdown_state = state.clone();
     let shutdown_ingest_enabled = ingest_enabled.clone();
-    let shutdown_save_gate = energy_save_gate.clone();
+    let shutdown_save_gate = state.energy_save_gate.clone();
     let (_, server) = warp::serve(routes).bind_with_graceful_shutdown((host, port), async move {
         wait_for_shutdown_signal().await;
         println!("[info] Shutdown requested; saving energy history");

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::energy::EnergyState;
+use crate::energy::{EnergyState, SaveGate};
 use crate::gpu::GpuMetrics;
 use crate::gpu::env::GpuEnv;
 use crate::llama::metrics::LlamaMetrics;
@@ -79,6 +79,7 @@ pub struct AppState {
     pub llama_reachable: Arc<Mutex<bool>>,
     pub energy: Arc<Mutex<EnergyState>>,
     pub energy_path: PathBuf,
+    pub energy_save_gate: SaveGate,
     pub running_model: Arc<Mutex<RunningModelInfo>>,
     pub log_buffer: Arc<Mutex<LogBuffer>>,
     pub log_source: Arc<Mutex<LogSourceInfo>>,
@@ -147,6 +148,7 @@ impl AppState {
             llama_reachable: Arc::new(Mutex::new(false)),
             energy: Arc::new(Mutex::new(energy)),
             energy_path,
+            energy_save_gate: Arc::new(tokio::sync::Mutex::new(())),
             running_model: Arc::new(Mutex::new(RunningModelInfo::default())),
             log_buffer: Arc::new(Mutex::new(LogBuffer::new(MAX_LOG_LINES))),
             log_source: Arc::new(Mutex::new(log_source)),
