@@ -42,4 +42,9 @@ pub struct AppArgs {
     /// Visible GPU device indices (e.g. 0,1,2,3)
     #[arg(long)]
     pub gpu_devices: Option<String>,
+
+    /// Follow an external llama-server log file (tail -F), e.g. when the server
+    /// is started outside Llama Monitor. `~/` is expanded to the home directory.
+    #[arg(long)]
+    pub external_log_file: Option<PathBuf>,
 }

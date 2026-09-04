@@ -18,11 +18,48 @@ function switchTab(name) {
 
 let presets = [];
 let serverRunning = false;
-let prevLogLen = 0;
 let serverStartedAt = null;
 let wsConnected = false;
 let settingsSaveTimer = null;
 let lastRunningModel = null;
+let logAutoScroll = true;
+let logUserPinnedBottom = true;
+let lastLogView = { logs: [], log_source: {} };
+
+function logSourceLabel(kind) {
+    if (kind === 'external_file') return 'External file';
+    if (kind === 'managed_process') return 'Managed process';
+    return 'No source';
+}
+
+function logStatusLabel(status) {
+    if (status === 'connected') return 'Connected';
+    if (status === 'waiting_for_file') return 'Waiting for file';
+    if (status === 'error') return 'Error';
+    return 'Idle';
+}
+
+function applyLogPanel(d) {
+    if (d) lastLogView = d;
+    const src = lastLogView.log_source || {};
+    text('log-source-kind', logSourceLabel(src.kind));
+    text('log-source-file', src.file_name || '—');
+    const st = logStatusLabel(src.status);
+    text('log-source-status', src.error ? st + ': ' + src.error : st);
+
+    const all = lastLogView.logs || [];
+    const filter = ($('log-filter').value || '').trim().toLowerCase();
+    const visible = filter
+        ? all.filter(l => String(l).toLowerCase().includes(filter))
+        : all;
+    text('log-line-count', visible.length + ' / ' + all.length);
+
+    const el = $('log-panel');
+    const stick = logAutoScroll && logUserPinnedBottom;
+    el.textContent = visible.join('\n');
+    if (stick) el.scrollTop = el.scrollHeight;
+    text('badge-logs', all.length > 0 ? ' ' + all.length : '');
+}
 
 function collectSettings() {
     return {
@@ -31,6 +68,7 @@ function collectSettings() {
         llama_server_path: $('set-server-path').value,
         llama_server_cwd: $('set-server-cwd').value,
         models_dir: '',
+        external_log_file: $('set-external-log').value,
     };
 }
 
@@ -50,6 +88,7 @@ function applySettings(s) {
     if (s.port) $('port').value = s.port;
     if (s.llama_server_path !== undefined) $('set-server-path').value = s.llama_server_path;
     if (s.llama_server_cwd !== undefined) $('set-server-cwd').value = s.llama_server_cwd;
+    if (s.external_log_file !== undefined) $('set-external-log').value = s.external_log_file;
 }
 
 $('controls').addEventListener('input', saveSettings);
@@ -839,14 +878,7 @@ function applyWsPayload(d) {
         tbody.appendChild(tr);
     });
 
-    const logs = d.logs || [];
-    if (logs.length !== prevLogLen) {
-        const el = $('log-panel');
-        const wasAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-        el.textContent = logs.join('\n');
-        if (wasAtBottom) el.scrollTop = el.scrollHeight;
-        prevLogLen = logs.length;
-    }
+    applyLogPanel(d);
 
     const badgeParts = [];
     if (serverRunning) badgeParts.push('Running');
@@ -855,7 +887,6 @@ function applyWsPayload(d) {
     if (gpuEntries.length > 0) badgeParts.push(Math.max(...gpuEntries.map(([, m]) => m.temp)).toFixed(0) + 'C');
     text('badge-server', badgeParts.length ? ' ' + badgeParts.join(' · ') : ' Stopped');
     text('badge-chat', chatHistory.length > 0 ? ' ' + chatHistory.length + ' msg' : '');
-    text('badge-logs', logs.length > 0 ? ' ' + logs.length : '');
     refreshModelCard();
 }
 
@@ -1060,6 +1091,31 @@ $('btn-chat-clear').addEventListener('click', clearChat);
 $('btn-send').addEventListener('click', sendChat);
 $('browse-server-path').addEventListener('click', () => openFileBrowser('set-server-path', 'executable'));
 $('browse-server-cwd').addEventListener('click', () => openFileBrowser('set-server-cwd', 'dir'));
+$('log-panel').addEventListener('scroll', () => {
+    const el = $('log-panel');
+    logUserPinnedBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+});
+$('log-autoscroll').addEventListener('change', () => {
+    logAutoScroll = $('log-autoscroll').checked;
+    if (logAutoScroll) {
+        logUserPinnedBottom = true;
+        applyLogPanel(null);
+    }
+});
+$('log-filter').addEventListener('input', () => applyLogPanel(null));
+$('btn-log-bottom').addEventListener('click', () => {
+    logUserPinnedBottom = true;
+    const el = $('log-panel');
+    el.scrollTop = el.scrollHeight;
+});
+$('btn-log-clear').addEventListener('click', () => {
+    fetch('/api/logs/clear', { method: 'POST' })
+        .then(() => {
+            lastLogView = Object.assign({}, lastLogView, { logs: [] });
+            applyLogPanel(null);
+        })
+        .catch(() => {});
+});
 $('browse-model-path').addEventListener('click', () => openFileBrowser('modal-model-path', 'gguf'));
 $('btn-fb-close').addEventListener('click', closeFileBrowser);
 $('btn-fb-cancel').addEventListener('click', closeFileBrowser);

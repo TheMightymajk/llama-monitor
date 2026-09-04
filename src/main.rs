@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod gpu;
 mod llama;
+mod logs;
 mod models;
 mod presets;
 mod state;
@@ -63,7 +64,22 @@ async fn main() -> Result<()> {
     );
 
     // Load UI settings from disk (or defaults)
-    let ui_settings = state::load_ui_settings(&app_config.ui_settings_file);
+    let mut ui_settings = state::load_ui_settings(&app_config.ui_settings_file);
+
+    // Seed UI external log from CLI when UI has none (persisted UI still wins later).
+    if ui_settings.external_log_file.trim().is_empty()
+        && let Some(ref cli_log) = app_config.external_log_file
+    {
+        ui_settings.external_log_file = cli_log.to_string_lossy().into_owned();
+    }
+
+    let external_log_path = state::AppState::resolve_external_log_path(
+        &ui_settings,
+        app_config.external_log_file.as_deref(),
+    );
+    if let Some(ref p) = external_log_path {
+        println!("[info] External log file: {}", p.display());
+    }
 
     // Load lifetime usage counters
     let usage = usage::load_usage_stats(&app_config.usage_stats_file);
@@ -85,6 +101,8 @@ async fn main() -> Result<()> {
         app_config.ui_settings_file.clone(),
         usage,
         app_config.usage_stats_file.clone(),
+        external_log_path,
+        app_config.external_log_file.clone(),
     );
 
     if let Some(ref dir) = app_config.models_dir {
@@ -111,6 +129,12 @@ async fn main() -> Result<()> {
     {
         let s = state.clone();
         tokio::spawn(async move { llama::poller::llama_metrics_poller(s).await });
+    }
+
+    // External log file follower (tail -F)
+    {
+        let s = state.clone();
+        tokio::spawn(async move { logs::external_log_poller(s).await });
     }
 
     let port = app_config.port;

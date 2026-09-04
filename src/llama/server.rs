@@ -86,8 +86,14 @@ pub async fn start_server(
 
     // Clear old logs
     {
-        let mut logs = state.server_logs.lock().unwrap();
+        let mut logs = state.log_buffer.lock().unwrap();
         logs.clear();
+        let mut src = state.log_source.lock().unwrap();
+        if !state.using_external_logs() {
+            *src = crate::logs::LogSourceInfo::default();
+        } else {
+            src.line_count = 0;
+        }
     }
 
     let mut cmd = TokioCommand::new(&app_config.llama_server_path);

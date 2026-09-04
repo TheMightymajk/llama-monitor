@@ -35,6 +35,7 @@ src/
                        poller.rs (async /health, /metrics, /slots polling)
   presets/             ModelPreset CRUD, persisted to ~/.config/llama-monitor/presets.json
   usage/               Lifetime token counters + $ savings, persisted to usage-stats.json
+  logs/                LogBuffer + external file follow (tail -F); ManagedProcess | ExternalFile | None
   models/              GGUF discovery in a configured directory
   web/                 warp routes: api.rs (REST + file browser + chat proxy),
                        ws.rs (WebSocket push), static_assets.rs (embedded frontend)

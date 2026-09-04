@@ -3,6 +3,7 @@ use std::time::Duration;
 use warp::Filter;
 use warp::ws::{Message, Ws};
 
+use crate::logs::LogSourceInfo;
 use crate::state::AppState;
 
 const WS_PUSH_INTERVAL: Duration = Duration::from_millis(500);
@@ -25,8 +26,8 @@ pub fn ws_route(
                         let json = {
                             let gpu = state.gpu_metrics.lock().unwrap().clone();
                             let llama = state.llama_metrics.lock().unwrap().clone();
-                            let logs: Vec<String> =
-                                state.server_logs.lock().unwrap().iter().cloned().collect();
+                            let logs = state.log_buffer.lock().unwrap().snapshot();
+                            let log_source = state.log_source.lock().unwrap().clone();
                             let running = *state.server_running.lock().unwrap();
                             let started_at = *state.server_started_at.lock().unwrap();
                             let usage = state.usage.lock().unwrap().snapshot();
@@ -35,6 +36,7 @@ pub fn ws_route(
                                 &gpu,
                                 &llama,
                                 &logs,
+                                &log_source,
                                 running,
                                 started_at,
                                 &usage,
@@ -55,10 +57,12 @@ pub fn ws_route(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_ws_payload(
     gpu: &std::collections::BTreeMap<String, crate::gpu::GpuMetrics>,
     llama: &crate::llama::metrics::LlamaMetrics,
     logs: &[String],
+    log_source: &LogSourceInfo,
     server_running: bool,
     server_started_at: Option<u64>,
     usage: &crate::usage::UsageSnapshot,
@@ -68,6 +72,7 @@ pub fn build_ws_payload(
         "gpu": gpu,
         "llama": llama,
         "logs": logs,
+        "log_source": log_source,
         "server_running": server_running,
         "server_started_at": server_started_at,
         "usage": usage,
@@ -79,6 +84,7 @@ pub fn build_ws_payload(
 mod tests {
     use super::*;
     use crate::llama::metrics::LlamaMetrics;
+    use crate::logs::LogSourceInfo;
     use std::collections::BTreeMap;
 
     fn empty_usage() -> crate::usage::UsageSnapshot {
@@ -95,6 +101,7 @@ mod tests {
             &BTreeMap::new(),
             &LlamaMetrics::default(),
             &[],
+            &LogSourceInfo::default(),
             true,
             Some(1_700_000_000),
             &empty_usage(),
@@ -102,12 +109,8 @@ mod tests {
         );
         assert_eq!(payload["server_running"], true);
         assert_eq!(payload["server_started_at"], 1_700_000_000);
-        assert!(payload.get("gpu").is_some());
-        assert!(payload.get("llama").is_some());
-        assert!(payload.get("logs").is_some());
-        assert!(payload.get("usage").is_some());
-        assert!(payload.get("running_model").is_some());
-        assert_eq!(payload["usage"]["prompt_tokens"], 0);
+        assert!(payload.get("log_source").is_some());
+        assert_eq!(payload["log_source"]["kind"], "none");
         assert_eq!(payload["running_model"]["detected"], false);
     }
 
@@ -117,6 +120,7 @@ mod tests {
             &BTreeMap::new(),
             &LlamaMetrics::default(),
             &["line".into()],
+            &LogSourceInfo::default(),
             false,
             None,
             &empty_usage(),

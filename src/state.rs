@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -7,11 +7,12 @@ use crate::gpu::env::GpuEnv;
 use crate::llama::metrics::LlamaMetrics;
 use crate::llama::running_model::RunningModelInfo;
 use crate::llama::server::ServerConfig;
+use crate::logs::{
+    LogBuffer, LogSourceInfo, LogSourceKind, LogSourceStatus, MAX_LOG_LINES, expand_tilde,
+};
 use crate::models::DiscoveredModel;
 use crate::presets::ModelPreset;
 use crate::usage::UsageStats;
-
-const MAX_LOG_LINES: usize = 500;
 
 /// Persisted UI control-bar settings (survives page reload).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -26,6 +27,10 @@ pub struct UiSettings {
     pub llama_server_cwd: String,
     #[serde(default)]
     pub models_dir: String,
+    /// Optional external llama-server log file (`~/` expanded). When set, Logs
+    /// follow this file instead of the managed process stdout/stderr.
+    #[serde(default)]
+    pub external_log_file: String,
 }
 
 fn default_port() -> u16 {
@@ -40,6 +45,7 @@ impl Default for UiSettings {
             llama_server_path: String::new(),
             llama_server_cwd: String::new(),
             models_dir: String::new(),
+            external_log_file: String::new(),
         }
     }
 }
@@ -70,7 +76,12 @@ pub struct AppState {
     pub gpu_metrics: Arc<Mutex<BTreeMap<String, GpuMetrics>>>,
     pub llama_metrics: Arc<Mutex<LlamaMetrics>>,
     pub running_model: Arc<Mutex<RunningModelInfo>>,
-    pub server_logs: Arc<Mutex<VecDeque<String>>>,
+    pub log_buffer: Arc<Mutex<LogBuffer>>,
+    pub log_source: Arc<Mutex<LogSourceInfo>>,
+    /// Effective external log path (UI overrides CLI when non-empty).
+    pub external_log_path: Arc<Mutex<Option<PathBuf>>>,
+    /// CLI fallback path when UI field is empty.
+    pub cli_external_log_path: Option<PathBuf>,
     pub server_child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
     pub server_running: Arc<Mutex<bool>>,
     pub server_started_at: Arc<Mutex<Option<u64>>>,
@@ -100,17 +111,38 @@ impl AppState {
         ui_settings_path: PathBuf,
         usage: UsageStats,
         usage_path: PathBuf,
+        external_log_path: Option<PathBuf>,
+        cli_external_log_path: Option<PathBuf>,
     ) -> Self {
         let discovered = models_dir
             .as_ref()
             .and_then(|dir| crate::models::scan_models_dir(dir).ok())
             .unwrap_or_default();
 
+        let log_source = if external_log_path.is_some() {
+            LogSourceInfo {
+                kind: LogSourceKind::ExternalFile,
+                status: LogSourceStatus::WaitingForFile,
+                file_name: external_log_path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string()),
+                error: None,
+                line_count: 0,
+            }
+        } else {
+            LogSourceInfo::default()
+        };
+
         Self {
             gpu_metrics: Arc::new(Mutex::new(BTreeMap::new())),
             llama_metrics: Arc::new(Mutex::new(LlamaMetrics::default())),
             running_model: Arc::new(Mutex::new(RunningModelInfo::default())),
-            server_logs: Arc::new(Mutex::new(VecDeque::new())),
+            log_buffer: Arc::new(Mutex::new(LogBuffer::new(MAX_LOG_LINES))),
+            log_source: Arc::new(Mutex::new(log_source)),
+            external_log_path: Arc::new(Mutex::new(external_log_path)),
+            cli_external_log_path,
             server_child: Arc::new(tokio::sync::Mutex::new(None)),
             server_running: Arc::new(Mutex::new(false)),
             server_started_at: Arc::new(Mutex::new(None)),
@@ -129,18 +161,49 @@ impl AppState {
         }
     }
 
+    /// Whether Logs should follow an external file (excludes managed process output).
+    pub fn using_external_logs(&self) -> bool {
+        self.external_log_path.lock().unwrap().is_some()
+    }
+
     pub fn push_log(&self, line: String) {
-        // Extract KV cache hits from llama-server timings before storing the line.
+        // Cache hits from managed-process lines (and still useful if mixed tooling).
         if let Some(n) = crate::usage::parse_cache_n(&line) {
             let mut usage = self.usage.lock().unwrap();
             if usage.add_cached(n) {
                 let _ = usage.maybe_save(&self.usage_path, false);
             }
         }
-        let mut logs = self.server_logs.lock().unwrap();
-        if logs.len() >= MAX_LOG_LINES {
-            logs.pop_front();
+        // Do not mix managed stdout into the buffer when an external file is configured.
+        if self.using_external_logs() {
+            return;
         }
-        logs.push_back(line);
+        let mut logs = self.log_buffer.lock().unwrap();
+        logs.push_line(line);
+        let mut src = self.log_source.lock().unwrap();
+        src.kind = LogSourceKind::ManagedProcess;
+        src.status = LogSourceStatus::Connected;
+        src.file_name = None;
+        src.error = None;
+        src.line_count = logs.len();
+    }
+
+    pub fn clear_log_view(&self) {
+        self.log_buffer.lock().unwrap().clear();
+        let mut src = self.log_source.lock().unwrap();
+        src.line_count = 0;
+    }
+
+    /// Resolve effective external log path: non-empty UI setting wins, else CLI.
+    pub fn resolve_external_log_path(ui: &UiSettings, cli: Option<&Path>) -> Option<PathBuf> {
+        let from_ui = ui.external_log_file.trim();
+        if !from_ui.is_empty() {
+            let p = expand_tilde(from_ui);
+            if !p.as_os_str().is_empty() {
+                return Some(p);
+            }
+        }
+        cli.map(|p| p.to_path_buf())
+            .filter(|p| !p.as_os_str().is_empty())
     }
 }

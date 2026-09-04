@@ -30,7 +30,8 @@ pub fn api_routes(
     let put_settings = api_put_settings(state.clone());
     let browse = api_browse();
     let chat = api_chat(state.clone());
-    let usage_reset = api_usage_reset(state);
+    let usage_reset = api_usage_reset(state.clone());
+    let clear_logs = api_clear_logs(state);
 
     start
         .or(stop)
@@ -48,6 +49,7 @@ pub fn api_routes(
         .or(browse)
         .or(chat)
         .or(usage_reset)
+        .or(clear_logs)
 }
 
 fn api_start(
@@ -266,6 +268,17 @@ fn api_put_settings(
             let mut settings = state.ui_settings.lock().unwrap();
             *settings = updated;
             let _ = app_state::save_ui_settings(&state.ui_settings_path, &settings);
+
+            // Refresh external log follower path (UI wins when non-empty).
+            let old_log = state.external_log_path.lock().unwrap().clone();
+            let new_log = AppState::resolve_external_log_path(
+                &settings,
+                state.cli_external_log_path.as_deref(),
+            );
+            if old_log != new_log {
+                state.log_buffer.lock().unwrap().clear();
+            }
+            *state.external_log_path.lock().unwrap() = new_log;
             drop(settings);
 
             // Rescan models if models_dir changed
@@ -276,6 +289,18 @@ fn api_put_settings(
                 *state.discovered_models.lock().unwrap() = discovered;
             }
 
+            warp::reply::json(&serde_json::json!({"ok": true}))
+        })
+}
+
+fn api_clear_logs(
+    state: AppState,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path!("api" / "logs" / "clear")
+        .and(warp::post())
+        .map(move || {
+            // Clears only the in-memory view buffer — never deletes the log file.
+            state.clear_log_view();
             warp::reply::json(&serde_json::json!({"ok": true}))
         })
 }

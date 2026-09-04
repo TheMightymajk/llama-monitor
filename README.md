@@ -28,6 +28,7 @@ Web dashboard for managing [llama.cpp](https://github.com/ggerganov/llama.cpp) s
 - **File Browser** -- Browse the filesystem to select llama-server binary and .gguf model files
 - **Integrated Chat** -- Streaming chat UI with reasoning/thinking block support, proxied to the configured port
 - **Persistent Settings** -- Selected preset, port, and server paths survive page reloads and app restarts
+- **External Log Follow** -- When llama-server is started outside the monitor, follow its log file (`--external-log-file` / Configuration) with live Logs UI
 - **PWA Support** -- Installable as a standalone app on mobile and desktop
 
 ## Supported Hardware
@@ -83,6 +84,7 @@ Open `http://localhost:7778` in your browser. Click the gear icon to configure s
 | `--gpu-backend` | | `auto` | Force GPU backend: `auto`, `rocm`, `nvidia`, `none` |
 | `--gpu-arch` | | (from config) | GPU architecture for ROCm (e.g. `gfx906`, `gfx1100`, `auto`) |
 | `--gpu-devices` | | (from config) | Visible GPU device indices (e.g. `0,1,2,3`) |
+| `--external-log-file` | | (none) | Follow an external llama-server log file (`tail -F`). Expands `~/`. When set, Logs show this file instead of managed-process stdout/stderr |
 
 All paths can also be configured from the web UI via the Configuration modal (gear icon). UI settings override CLI defaults and persist to `~/.config/llama-monitor/ui-settings.json`.
 
@@ -95,6 +97,26 @@ The llama-server binary path and working directory can be set via:
 2. **CLI flags** -- `--llama-server-path` and `--llama-server-cwd`
 
 UI settings take precedence over CLI defaults. Both are persisted across restarts.
+
+### External log file (externally started llama-server)
+
+When `llama-server` is started by an external script (not the Start button), point Llama Monitor at that process's log file:
+
+```bash
+# External script writes llama-server stdout/stderr to this path
+mkdir -p "$HOME/.local/state/llama-monitor"
+llama-server ... >>"$HOME/.local/state/llama-monitor/qwen38-llama.log" 2>&1 &
+
+# Monitor follows the same file (CLI or Configuration → External log file)
+"$LLAMA_MONITOR" \
+  --host 0.0.0.0 \
+  --port 7778 \
+  --gpu-backend rocm \
+  --external-log-file \
+    "$HOME/.local/state/llama-monitor/qwen38-llama.log"
+```
+
+`~/` in the path is expanded to the home directory. The setting is also available in **Configuration** and persists in `ui-settings.json`. While an external log path is configured, managed-process stdout/stderr is not mixed into the Logs view.
 
 ### GPU Environment
 
@@ -130,7 +152,7 @@ Control bar with preset selector and port. Start/stop the server. Live inference
 Streaming chat interface that proxies to the running llama-server's `/v1/chat/completions` endpoint on the configured port. Supports reasoning/thinking blocks and Markdown rendering.
 
 ### Logs Tab
-Real-time server log output.
+Real-time server log output from either the managed `llama-server` process (stdout/stderr) or a configured external log file. Shows source, file name, follow status, client-side filter, auto-scroll, and Clear view (memory only — never deletes the log file).
 
 ## Architecture
 
@@ -140,6 +162,8 @@ src/
   cli.rs               -- Clap argument definitions
   config.rs            -- AppConfig resolved from CLI args
   state.rs             -- Shared AppState (Arc<Mutex<...>>), UiSettings persistence
+  logs/
+    mod.rs             -- LogBuffer, external file follow (tail -F), source metadata
   usage/
     mod.rs             -- Lifetime token counters, cache hits, $ savings, usage-stats.json
   gpu/
@@ -197,6 +221,7 @@ llama-server /metrics       -->  Llama Poller (1s)   --> AppState
 | GET | `/api/settings` | Get persisted UI settings |
 | PUT | `/api/settings` | Save UI settings |
 | POST | `/api/usage/reset` | Reset lifetime token / savings counters |
+| POST | `/api/logs/clear` | Clear in-memory Logs view (does not delete files) |
 | GET | `/api/browse?path=&filter=` | Browse filesystem (filter: `gguf`, `executable`) |
 | GET | `/api/gpu-env` | Get GPU environment config |
 | PUT | `/api/gpu-env` | Save GPU environment config |

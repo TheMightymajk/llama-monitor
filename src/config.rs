@@ -24,6 +24,8 @@ pub struct AppConfig {
     pub gpu_devices_override: Option<String>,
     pub ui_settings_file: PathBuf,
     pub usage_stats_file: PathBuf,
+    /// CLI-provided external log path (UI setting overrides when non-empty).
+    pub external_log_file: Option<PathBuf>,
 }
 
 impl AppConfig {
@@ -39,6 +41,14 @@ impl AppConfig {
             .presets_file
             .unwrap_or_else(|| config_dir.join("presets.json"));
 
+        let external_log_file = args
+            .external_log_file
+            .map(|p| {
+                let s = p.to_string_lossy();
+                crate::logs::expand_tilde(&s)
+            })
+            .filter(|p| !p.as_os_str().is_empty());
+
         Self {
             llama_server_path: args.llama_server_path.unwrap_or(default_server_path),
             llama_server_cwd: args.llama_server_cwd.unwrap_or(default_server_cwd),
@@ -52,6 +62,7 @@ impl AppConfig {
             gpu_devices_override: args.gpu_devices,
             ui_settings_file: config_dir.join("ui-settings.json"),
             usage_stats_file: config_dir.join("usage-stats.json"),
+            external_log_file,
         }
     }
 }
@@ -59,6 +70,7 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_default_config() {
@@ -72,6 +84,7 @@ mod tests {
             gpu_backend: "auto".into(),
             gpu_arch: None,
             gpu_devices: None,
+            external_log_file: None,
         };
         let config = AppConfig::from_args(args);
         assert_eq!(config.port, 7778);
@@ -113,6 +126,9 @@ mod tests {
             gpu_backend: "nvidia".into(),
             gpu_arch: Some("gfx1100".into()),
             gpu_devices: Some("0,1".into()),
+            external_log_file: Some(PathBuf::from(
+                "/home/user/.local/state/llama-monitor/qwen38-llama.log",
+            )),
         };
         let config = AppConfig::from_args(args);
         assert_eq!(
@@ -123,6 +139,12 @@ mod tests {
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.gpu_arch_override, Some("gfx1100".into()));
         assert_eq!(config.gpu_devices_override, Some("0,1".into()));
+        assert_eq!(
+            config.external_log_file.as_deref(),
+            Some(Path::new(
+                "/home/user/.local/state/llama-monitor/qwen38-llama.log"
+            ))
+        );
     }
 
     #[test]

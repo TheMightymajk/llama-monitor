@@ -176,6 +176,20 @@
     </div>
 
     <div class="page" id="page-logs">
+        <div class="log-toolbar">
+            <div class="log-meta">
+                <span class="pill pill-muted"><span class="pill-key">Source</span> <span id="log-source-kind">—</span></span>
+                <span class="pill pill-muted"><span class="pill-key">File</span> <span id="log-source-file">—</span></span>
+                <span class="pill pill-muted"><span class="pill-key">Status</span> <span id="log-source-status">—</span></span>
+                <span class="pill pill-muted"><span class="pill-key">Lines</span> <span id="log-line-count">0 / 0</span></span>
+            </div>
+            <div class="log-actions">
+                <input type="search" id="log-filter" placeholder="Filter…" aria-label="Filter logs">
+                <label class="log-toggle"><input type="checkbox" id="log-autoscroll" checked> Auto-scroll</label>
+                <button type="button" class="btn-sm btn-preset" id="btn-log-bottom">Scroll to bottom</button>
+                <button type="button" class="btn-sm btn-preset" id="btn-log-clear">Clear view</button>
+            </div>
+        </div>
         <div class="log-panel" id="log-panel"></div>
     </div>
 
@@ -217,6 +231,9 @@
                         <input type="text" id="set-server-cwd" placeholder=". (current dir)">
                         <button type="button" class="btn-sm btn-preset" id="browse-server-cwd">Browse</button>
                     </div>
+                </label>
+                <label class="modal-field" title="When llama-server is started outside Llama Monitor, follow this log file (tail -F). Supports ~/ paths. Leave empty to use managed-process stdout/stderr.">External log file
+                    <input type="text" id="set-external-log" placeholder="~/.local/state/llama-monitor/llama.log">
                 </label>
             </details>
 
