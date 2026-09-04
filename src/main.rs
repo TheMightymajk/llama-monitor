@@ -1,5 +1,7 @@
 mod cli;
 mod config;
+#[allow(dead_code)]
+mod energy;
 mod gpu;
 mod llama;
 mod logs;
