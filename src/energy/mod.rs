@@ -128,6 +128,8 @@ impl EnergyState {
             self.last_measurement_at = Some(now_local);
         }
 
+        self.prune_daily(now_local);
+
         if delta_kwh == 0.0 {
             return;
         }
@@ -376,6 +378,41 @@ mod tests {
 
         assert_eq!(e.snapshot(t0, old_local).today.energy_kwh, 0.0);
         assert!(e.snapshot(t0, today_local).today.energy_kwh > 0.0);
+    }
+
+    #[test]
+    fn prune_drops_old_daily_buckets_on_zero_energy_ingest() {
+        let mut e = EnergyState::new_default();
+        let t0 = Instant::now();
+        let today = Local::now().date_naive();
+        let old_date = today.checked_sub_days(Days::new(35)).expect("valid old date");
+        let old_local = Local
+            .from_local_datetime(&old_date.and_hms_opt(12, 0, 0).unwrap())
+            .single()
+            .expect("valid local datetime");
+        let today_local = Local
+            .from_local_datetime(&today.and_hms_opt(12, 0, 0).unwrap())
+            .single()
+            .expect("valid local datetime");
+
+        e.ingest(&[sample("0", 100.0, 0.0)], idle_busy(), t0, old_local);
+        e.ingest(
+            &[sample("0", 100.0, 0.0)],
+            idle_busy(),
+            t0 + Duration::from_millis(500),
+            old_local,
+        );
+        assert!(e.snapshot(t0, old_local).today.energy_kwh > 0.0);
+
+        let lifetime_before = e.snapshot(t0, today_local).lifetime.energy_kwh;
+        assert!(lifetime_before > 0.0);
+
+        // First sample on today adds no energy but must still prune stale daily buckets.
+        e.ingest(&[sample("0", 100.0, 0.0)], idle_busy(), t0, today_local);
+        let snap = e.snapshot(t0, today_local);
+        assert_eq!(snap.lifetime.energy_kwh, lifetime_before);
+        assert_eq!(snap.today.energy_kwh, 0.0);
+        assert_eq!(e.snapshot(t0, old_local).today.energy_kwh, 0.0);
     }
 
     #[test]
