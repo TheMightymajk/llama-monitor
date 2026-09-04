@@ -264,6 +264,19 @@ mod tests {
     }
 
     #[test]
+    fn skipped_prometheus_sample_does_not_reset_lifetime() {
+        let mut s = UsageStats::default();
+        s.apply_prometheus(1000, 400);
+        // /metrics failure: poller must not call apply_prometheus
+        assert_eq!(s.prompt_tokens, 1000);
+        assert_eq!(s.predicted_tokens, 400);
+        assert_eq!(s.last_prompt, 1000);
+        s.apply_prometheus(1100, 450);
+        assert_eq!(s.prompt_tokens, 1100);
+        assert_eq!(s.predicted_tokens, 450);
+    }
+
+    #[test]
     fn apply_prometheus_server_restart() {
         let mut s = UsageStats::default();
         s.apply_prometheus(1000, 500);

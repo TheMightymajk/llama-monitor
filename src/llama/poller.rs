@@ -66,81 +66,55 @@ pub async fn llama_metrics_poller(state: AppState) {
         }
 
         if !server_reachable {
+            {
+                let mut m = state.llama_metrics.lock().unwrap();
+                m.clear_metrics_gauges();
+                m.clear_slots_gauges();
+                m.status.clear();
+            }
             tokio::time::sleep(LLAMA_POLL_INTERVAL).await;
             continue;
         }
 
         // Poll /metrics — failures must not abort the rest of the loop
-        if let Ok(resp) = client.get(format!("{base}/metrics")).send().await
+        let metrics_ok = if let Ok(resp) = client.get(format!("{base}/metrics")).send().await
+            && resp.status().is_success()
             && let Ok(body) = resp.text().await
         {
             let prom = parse_prometheus_metrics(&body);
-
-            let prompt_tps = if prom.prompt_tokens_per_sec > 0.0 {
-                prom.prompt_tokens_per_sec
-            } else if prom.prompt_seconds_total > 0.0 {
-                prom.prompt_tokens_total / prom.prompt_seconds_total
-            } else {
-                0.0
-            };
-
-            let gen_tps = if prom.predicted_tokens_per_sec > 0.0 {
-                prom.predicted_tokens_per_sec
-            } else if prom.predicted_seconds_total > 0.0 {
-                prom.predicted_tokens_total / prom.predicted_seconds_total
-            } else {
-                0.0
-            };
-
-            let prompt_total = prom.prompt_tokens_total as u64;
-            let predicted_total = prom.predicted_tokens_total as u64;
-
             {
                 let mut m = state.llama_metrics.lock().unwrap();
-                m.prompt_tokens_per_sec = prompt_tps;
-                m.generation_tokens_per_sec = gen_tps;
-                m.prompt_tokens_total = prompt_total;
-                m.predicted_tokens_total = predicted_total;
-                m.kv_cache_tokens = prom.n_tokens_max;
-                m.requests_processing = prom.requests_processing;
+                m.apply_metrics(&prom);
             }
-
             {
                 let mut usage = state.usage.lock().unwrap();
-                usage.apply_prometheus(prompt_total, predicted_total);
+                usage.apply_prometheus(
+                    prom.prompt_tokens_total as u64,
+                    prom.predicted_tokens_total as u64,
+                );
                 let _ = usage.maybe_save(&state.usage_path, false);
             }
+            true
+        } else {
+            false
+        };
+        if !metrics_ok {
+            state.llama_metrics.lock().unwrap().clear_metrics_gauges();
         }
 
-        // Poll /slots — get per-slot processing state + total context
-        if let Ok(resp) = client.get(format!("{base}/slots")).send().await
+        // Poll /slots — live KV occupancy + slot busy flags
+        let slots_ok = if let Ok(resp) = client.get(format!("{base}/slots")).send().await
+            && resp.status().is_success()
             && let Ok(body) = resp.text().await
             && let Ok(slots) = serde_json::from_str::<Vec<serde_json::Value>>(&body)
         {
-            let mut idle = 0u32;
-            let mut processing = 0u32;
-            let num_slots = slots.len() as u64;
-            let mut per_slot_ctx = 0u64;
-            for slot in &slots {
-                if slot
-                    .get("is_processing")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-                {
-                    processing += 1;
-                } else {
-                    idle += 1;
-                }
-                if let Some(n) = slot.get("n_ctx").and_then(|v| v.as_u64()) {
-                    per_slot_ctx = n;
-                }
-            }
-            let mut m = state.llama_metrics.lock().unwrap();
-            m.slots_idle = idle;
-            m.slots_processing = processing;
-            if per_slot_ctx > 0 {
-                m.kv_cache_max = per_slot_ctx * num_slots;
-            }
+            state.llama_metrics.lock().unwrap().apply_slots(&slots);
+            true
+        } else {
+            false
+        };
+        if !slots_ok {
+            state.llama_metrics.lock().unwrap().clear_slots_gauges();
         }
 
         // Discover running model: /props then /v1/models (errors are non-fatal)

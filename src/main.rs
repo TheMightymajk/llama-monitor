@@ -163,8 +163,8 @@ async fn main() -> Result<()> {
                             let llama = llama_metrics.lock().unwrap();
                             let health_ok = *llama_reachable.lock().unwrap();
                             energy::BusyFlags {
-                                requests_processing: llama.requests_processing,
-                                slots_processing: llama.slots_processing,
+                                requests_processing: llama.busy_requests(),
+                                slots_processing: llama.busy_slots(),
                                 health_ok,
                             }
                         };

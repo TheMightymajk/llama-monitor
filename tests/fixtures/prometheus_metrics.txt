@@ -16,8 +16,8 @@ llamacpp:tokens_predicted_total 5000
 # HELP llamacpp:tokens_predicted_seconds_total Total predicted seconds
 # TYPE llamacpp:tokens_predicted_seconds_total counter
 llamacpp:tokens_predicted_seconds_total 88.2
-# HELP llamacpp:n_tokens_max Maximum context tokens
-# TYPE llamacpp:n_tokens_max gauge
+# HELP llamacpp:n_tokens_max High watermark of the context size observed
+# TYPE llamacpp:n_tokens_max counter
 llamacpp:n_tokens_max 131072
 # HELP llamacpp:requests_processing Current requests processing
 # TYPE llamacpp:requests_processing gauge
