@@ -74,7 +74,7 @@ pub fn save_ui_settings(path: &Path, settings: &UiSettings) -> anyhow::Result<()
 
 #[derive(Clone)]
 pub struct AppState {
-    pub gpu_metrics: Arc<Mutex<BTreeMap<String, GpuMetrics>>>,
+    pub gpu_metrics: Arc<Mutex<Option<BTreeMap<String, GpuMetrics>>>>,
     pub llama_metrics: Arc<Mutex<LlamaMetrics>>,
     pub llama_reachable: Arc<Mutex<bool>>,
     pub energy: Arc<Mutex<EnergyState>>,
@@ -143,7 +143,7 @@ impl AppState {
         };
 
         Self {
-            gpu_metrics: Arc::new(Mutex::new(BTreeMap::new())),
+            gpu_metrics: Arc::new(Mutex::new(None)),
             llama_metrics: Arc::new(Mutex::new(LlamaMetrics::default())),
             llama_reachable: Arc::new(Mutex::new(false)),
             energy: Arc::new(Mutex::new(energy)),

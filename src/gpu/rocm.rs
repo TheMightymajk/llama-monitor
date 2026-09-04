@@ -58,13 +58,20 @@ pub fn parse_rocm_json(json: &serde_json::Value) -> Result<BTreeMap<String, GpuM
             .and_then(|u| u.parse::<u32>().ok())
             .unwrap_or(0);
 
-        let power_consumption = card
+        let current_power = card
             .get("Current Socket Graphics Package Power (W)")
-            .or_else(|| card.get("Average Graphics Package Power (W)"))
+            .and_then(|v| v.as_str())
+            .and_then(|p| p.parse::<f32>().ok());
+        let average_power = card
+            .get("Average Graphics Package Power (W)")
             .or_else(|| card.get("Average Package Power (W)"))
             .and_then(|v| v.as_str())
-            .and_then(|p| p.parse::<f32>().ok())
-            .unwrap_or(0.0);
+            .and_then(|p| p.parse::<f32>().ok());
+        let (power_consumption, power_kind) = match (current_power, average_power) {
+            (Some(w), _) => (Some(w), super::PowerKind::Current),
+            (None, Some(w)) => (Some(w), super::PowerKind::Average),
+            (None, None) => (None, super::PowerKind::Current),
+        };
 
         let power_limit = card
             .get("Max Graphics Package Power (W)")
@@ -114,6 +121,7 @@ pub fn parse_rocm_json(json: &serde_json::Value) -> Result<BTreeMap<String, GpuM
                 temp,
                 load,
                 power_consumption,
+                power_kind,
                 power_limit,
                 vram_used,
                 vram_total,
@@ -142,7 +150,8 @@ mod tests {
         let card = metrics.get("card0").unwrap();
         assert!((card.temp - 45.0).abs() < 0.1);
         assert_eq!(card.load, 87);
-        assert!((card.power_consumption - 180.5).abs() < 0.1);
+        assert!((card.power_consumption.unwrap() - 180.5).abs() < 0.1);
+        assert_eq!(card.power_kind, crate::gpu::PowerKind::Current);
         assert_eq!(card.power_limit, 300);
         assert_eq!(card.vram_used, 15360); // 16106127360 / 1024 / 1024
         assert_eq!(card.vram_total, 16384); // 17179869184 / 1024 / 1024
@@ -165,6 +174,37 @@ mod tests {
         let card = metrics.get("card0").unwrap();
         assert_eq!(card.load, 50);
         assert_eq!(card.temp, 0.0);
-        assert_eq!(card.power_consumption, 0.0);
+        assert_eq!(card.power_consumption, None);
+    }
+
+    #[test]
+    fn parse_rocm_prefers_current_power_over_average() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+                "card0": {
+                    "Current Socket Graphics Package Power (W)": "210.0",
+                    "Average Graphics Package Power (W)": "90.0"
+                }
+            }"#,
+        )
+        .unwrap();
+        let card = parse_rocm_json(&json).unwrap().remove("card0").unwrap();
+        assert!((card.power_consumption.unwrap() - 210.0).abs() < 0.1);
+        assert_eq!(card.power_kind, crate::gpu::PowerKind::Current);
+    }
+
+    #[test]
+    fn parse_rocm_average_power_when_current_missing() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{
+                "card0": {
+                    "Average Graphics Package Power (W)": "95.5"
+                }
+            }"#,
+        )
+        .unwrap();
+        let card = parse_rocm_json(&json).unwrap().remove("card0").unwrap();
+        assert!((card.power_consumption.unwrap() - 95.5).abs() < 0.1);
+        assert_eq!(card.power_kind, crate::gpu::PowerKind::Average);
     }
 }

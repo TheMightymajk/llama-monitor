@@ -148,17 +148,18 @@ async fn main() -> Result<()> {
                     thread::sleep(GPU_POLL_INTERVAL);
                     continue;
                 }
-                match backend.read_metrics() {
+                match gpu::apply_gpu_poll_result(&mut gpu.lock().unwrap(), backend.read_metrics()) {
                     Ok(metrics) => {
                         let samples: Vec<_> = metrics
                             .iter()
-                            .map(|(id, metrics)| energy::GpuPowerSample {
-                                id: id.clone(),
-                                power_w: metrics.power_consumption,
-                                utilization: metrics.load as f32,
+                            .filter_map(|(id, metrics)| {
+                                Some(energy::GpuPowerSample {
+                                    id: id.clone(),
+                                    power_w: metrics.power_consumption?,
+                                    utilization: metrics.load as f32,
+                                })
                             })
                             .collect();
-                        *gpu.lock().unwrap() = metrics;
                         let busy = {
                             let llama = llama_metrics.lock().unwrap();
                             let health_ok = *llama_reachable.lock().unwrap();

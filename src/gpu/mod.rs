@@ -7,16 +7,45 @@ use anyhow::Result;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+/// How a watt reading was obtained. Average is not the same as instantaneous draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerKind {
+    #[default]
+    Current,
+    Average,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GpuMetrics {
     pub temp: f32,
     pub load: u32,
-    pub power_consumption: f32,
+    /// Instantaneous or average watts; `None` when the tool omitted power.
+    pub power_consumption: Option<f32>,
+    pub power_kind: PowerKind,
     pub power_limit: u32,
     pub vram_used: u64,
     pub vram_total: u64,
     pub sclk_mhz: u32,
     pub mclk_mhz: u32,
+}
+
+/// Successful poll replaces live GPU gauges. A failed poll must not keep the
+/// previous sample: `None` means "unavailable", not "no GPUs".
+pub fn apply_gpu_poll_result(
+    store: &mut Option<BTreeMap<String, GpuMetrics>>,
+    result: Result<BTreeMap<String, GpuMetrics>>,
+) -> Result<BTreeMap<String, GpuMetrics>> {
+    match result {
+        Ok(metrics) => {
+            *store = Some(metrics.clone());
+            Ok(metrics)
+        }
+        Err(e) => {
+            *store = None;
+            Err(e)
+        }
+    }
 }
 
 pub trait GpuBackend: Send + Sync + 'static {
@@ -35,11 +64,22 @@ pub struct MultiBackend {
 impl GpuBackend for MultiBackend {
     fn read_metrics(&self) -> Result<BTreeMap<String, GpuMetrics>> {
         let mut all = BTreeMap::new();
+        let mut any_ok = false;
+        let mut last_err: Option<anyhow::Error> = None;
         for backend in &self.backends {
             match backend.read_metrics() {
-                Ok(metrics) => all.extend(metrics),
-                Err(e) => eprintln!("[error] GPU metrics ({}): {e}", backend.name()),
+                Ok(metrics) => {
+                    any_ok = true;
+                    all.extend(metrics);
+                }
+                Err(e) => {
+                    eprintln!("[error] GPU metrics ({}): {e}", backend.name());
+                    last_err = Some(e);
+                }
             }
+        }
+        if !any_ok && let Some(e) = last_err {
+            return Err(e);
         }
         Ok(all)
     }
@@ -108,7 +148,8 @@ mod tests {
                         GpuMetrics {
                             temp: 0.0,
                             load: 0,
-                            power_consumption: 0.0,
+                            power_consumption: Some(0.0),
+                            power_kind: PowerKind::Current,
                             power_limit: 0,
                             vram_used: 0,
                             vram_total: 0,
@@ -167,5 +208,41 @@ mod tests {
         let metrics = multi.read_metrics().unwrap();
         assert_eq!(metrics.len(), 1);
         assert!(metrics.contains_key("GPU0 NVIDIA"));
+    }
+
+    #[test]
+    fn multi_backend_all_fail_is_error() {
+        let multi = MultiBackend {
+            backends: vec![Arc::new(StubBackend {
+                name: "rocm",
+                cards: vec!["card0"],
+                fail: true,
+            })],
+        };
+        assert!(multi.read_metrics().is_err());
+    }
+
+    #[test]
+    fn gpu_poll_error_clears_previous_sample() {
+        let sample = BTreeMap::from([(
+            "card0".to_string(),
+            GpuMetrics {
+                temp: 72.0,
+                load: 97,
+                power_consumption: Some(280.0),
+                power_kind: PowerKind::Current,
+                power_limit: 300,
+                vram_used: 28000,
+                vram_total: 32000,
+                sclk_mhz: 2000,
+                mclk_mhz: 1000,
+            },
+        )]);
+        let mut store = Some(sample.clone());
+        apply_gpu_poll_result(&mut store, Ok(sample)).unwrap();
+        assert!(store.is_some());
+        let err = apply_gpu_poll_result(&mut store, Err(anyhow::anyhow!("rocm-smi failed")));
+        assert!(err.is_err());
+        assert!(store.is_none());
     }
 }

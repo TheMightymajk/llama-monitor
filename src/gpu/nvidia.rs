@@ -60,7 +60,8 @@ pub fn parse_nvidia_csv(csv: &str) -> Result<BTreeMap<String, GpuMetrics>> {
             GpuMetrics {
                 temp,
                 load,
-                power_consumption,
+                power_consumption: Some(power_consumption),
+                power_kind: super::PowerKind::Current,
                 power_limit,
                 vram_used,
                 vram_total,
@@ -86,7 +87,7 @@ mod tests {
         let gpu0 = metrics.get("GPU0 NVIDIA GeForce RTX 4090").unwrap();
         assert!((gpu0.temp - 45.0).abs() < 0.1);
         assert_eq!(gpu0.load, 87);
-        assert!((gpu0.power_consumption - 320.5).abs() < 0.1);
+        assert!((gpu0.power_consumption.unwrap() - 320.5).abs() < 0.1);
         assert_eq!(gpu0.power_limit, 450);
         assert_eq!(gpu0.vram_used, 20480);
         assert_eq!(gpu0.vram_total, 24564);

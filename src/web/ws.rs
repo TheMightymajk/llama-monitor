@@ -65,7 +65,7 @@ pub fn ws_route(
 
 #[allow(clippy::too_many_arguments)]
 pub fn build_ws_payload(
-    gpu: &std::collections::BTreeMap<String, crate::gpu::GpuMetrics>,
+    gpu: &Option<std::collections::BTreeMap<String, crate::gpu::GpuMetrics>>,
     llama: &crate::llama::metrics::LlamaMetrics,
     logs: &[String],
     log_source: &LogSourceInfo,
@@ -93,7 +93,6 @@ mod tests {
     use super::*;
     use crate::llama::metrics::LlamaMetrics;
     use crate::logs::LogSourceInfo;
-    use std::collections::BTreeMap;
 
     fn empty_usage() -> crate::usage::UsageSnapshot {
         crate::usage::UsageStats::default().snapshot()
@@ -111,7 +110,7 @@ mod tests {
     #[test]
     fn ws_payload_includes_started_at_when_running() {
         let payload = build_ws_payload(
-            &BTreeMap::new(),
+            &None,
             &LlamaMetrics::default(),
             &[],
             &LogSourceInfo::default(),
@@ -128,12 +127,16 @@ mod tests {
         assert_eq!(payload["running_model"]["detected"], false);
         assert_eq!(payload["energy"]["currency"], "PLN");
         assert_eq!(payload["energy"]["available"], false);
+        assert!(payload["gpu"].is_null());
+        assert!(payload["llama"]["prompt_tokens_per_sec"].is_null());
+        assert!(payload["llama"]["kv_cache_tokens"].is_null());
+        assert!(payload["llama"]["generation_tokens_per_sec"].is_null());
     }
 
     #[test]
     fn ws_payload_null_started_at_when_stopped() {
         let payload = build_ws_payload(
-            &BTreeMap::new(),
+            &None,
             &LlamaMetrics::default(),
             &["line".into()],
             &LogSourceInfo::default(),
