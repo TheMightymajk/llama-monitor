@@ -57,3 +57,19 @@ diagnostics reported no errors in modified files.
 - Existing untracked `.idea/` files were not modified or staged.
 - Signal-driven shutdown was compile- and lint-verified but not process-tested to avoid writing to
   the developer's real platform state directory.
+
+## Review fix: bounded process exit
+
+**Finding:** After the energy shutdown sequence, `server.await` could hang indefinitely on open
+`/ws` WebSocket connections.
+
+**Fix:** Wrap server drain in a 2-second timeout (`SERVER_DRAIN_TIMEOUT`), log a warning on timeout,
+then call `std::process::exit(0)` so SIGTERM/SIGINT always terminate within a bounded window.
+
+Verification:
+
+```text
+cargo test && cargo clippy --all-targets -- -D warnings
+```
+
+Result: 104 tests passed; Clippy passed.

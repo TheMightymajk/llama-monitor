@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 const GPU_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const ENERGY_SAVE_INTERVAL: Duration = Duration::from_secs(30);
 const SAVE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const SERVER_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -256,9 +257,13 @@ async fn main() -> Result<()> {
         }
         println!("[info] Energy shutdown sequence complete");
     });
-    server.await;
-
-    Ok(())
+    match tokio::time::timeout(SERVER_DRAIN_TIMEOUT, server).await {
+        Ok(()) => {}
+        Err(_) => {
+            eprintln!("[warn] Timed out waiting for HTTP server drain; exiting");
+        }
+    }
+    std::process::exit(0);
 }
 
 async fn wait_for_shutdown_signal() {
