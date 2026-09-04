@@ -24,6 +24,7 @@ pub struct AppConfig {
     pub gpu_devices_override: Option<String>,
     pub ui_settings_file: PathBuf,
     pub usage_stats_file: PathBuf,
+    pub energy_stats_file: PathBuf,
     /// CLI-provided external log path (UI setting overrides when non-empty).
     pub external_log_file: Option<PathBuf>,
 }
@@ -62,6 +63,13 @@ impl AppConfig {
             gpu_devices_override: args.gpu_devices,
             ui_settings_file: config_dir.join("ui-settings.json"),
             usage_stats_file: config_dir.join("usage-stats.json"),
+            energy_stats_file: {
+                dirs::state_dir()
+                    .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("llama-monitor")
+                    .join("energy.json")
+            },
             external_log_file,
         }
     }
@@ -111,6 +119,13 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("usage-stats")
+        );
+        assert!(
+            config
+                .energy_stats_file
+                .to_str()
+                .unwrap()
+                .ends_with("llama-monitor/energy.json")
         );
     }
 
