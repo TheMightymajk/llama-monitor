@@ -1,8 +1,8 @@
 use chrono::{DateTime, Days, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs::File;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -120,19 +120,59 @@ pub fn load_energy_state(path: &Path) -> (EnergyState, Option<String>) {
 
 fn backup_corrupt_store(path: &Path, warning: &str) -> (EnergyState, Option<String>) {
     let timestamp = Local::now().format("%Y%m%dT%H%M%S");
+    backup_corrupt_store_at(path, warning, &timestamp.to_string())
+}
+
+fn backup_corrupt_store_at(
+    path: &Path,
+    warning: &str,
+    timestamp: &str,
+) -> (EnergyState, Option<String>) {
     let file_name = path
         .file_name()
         .map(|name| name.to_string_lossy())
         .unwrap_or_else(|| "energy.json".into());
-    let mut backup = path.with_file_name(format!("{file_name}.corrupt-{timestamp}"));
-    let mut suffix = 1_u32;
-    while backup.exists() {
-        backup = path.with_file_name(format!("{file_name}.corrupt-{timestamp}-{suffix}"));
-        suffix += 1;
-    }
+    let backup_result = (|| -> io::Result<PathBuf> {
+        let mut suffix = 0_u32;
+        let (backup, mut backup_file) = loop {
+            let suffix_label = if suffix == 0 {
+                String::new()
+            } else {
+                format!("-{suffix}")
+            };
+            let candidate =
+                path.with_file_name(format!("{file_name}.corrupt-{timestamp}{suffix_label}"));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => break (candidate, file),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    suffix = suffix.checked_add(1).ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::AlreadyExists, "backup suffix exhausted")
+                    })?;
+                }
+                Err(error) => return Err(error),
+            }
+        };
 
-    let backup_warning = match std::fs::rename(path, &backup) {
-        Ok(()) => format!("{warning}; a backup was created and fresh history was started"),
+        let copy_result = (|| {
+            let mut source = File::open(path)?;
+            io::copy(&mut source, &mut backup_file)?;
+            backup_file.flush()?;
+            std::fs::remove_file(path)
+        })();
+        if let Err(error) = copy_result {
+            drop(backup_file);
+            let _ = std::fs::remove_file(&backup);
+            return Err(error);
+        }
+        Ok(backup)
+    })();
+
+    let backup_warning = match backup_result {
+        Ok(_) => format!("{warning}; a backup was created and fresh history was started"),
         Err(error) => format!("{warning}; the original file was preserved: {error}"),
     };
     (EnergyState::new_default(), Some(backup_warning))
@@ -176,14 +216,6 @@ impl EnergyState {
             first_measurement_at: None,
             last_measurement_at: None,
         }
-    }
-
-    pub fn set_price_per_kwh(&mut self, price_per_kwh: f64) {
-        self.price_per_kwh = price_per_kwh;
-    }
-
-    pub fn set_inference_util_threshold(&mut self, threshold: f32) {
-        self.inference_util_threshold = threshold;
     }
 
     pub fn apply_settings(
@@ -457,7 +489,7 @@ mod tests {
     #[test]
     fn trapezoid_single_gpu_500ms() {
         let mut e = EnergyState::new_default();
-        e.set_price_per_kwh(1.0);
+        e.apply_settings(1.0, 20.0).unwrap();
         let t0 = Instant::now();
         let local = chrono::Local::now();
         e.ingest(&[sample("0", 100.0, 0.0)], idle_busy(), t0, local);
@@ -629,7 +661,7 @@ mod tests {
     #[test]
     fn util_fallback_any_gpu_not_average() {
         let mut e = EnergyState::new_default();
-        e.set_inference_util_threshold(20.0);
+        e.apply_settings(1.0, 20.0).unwrap();
         let t0 = Instant::now();
         let local = chrono::Local::now();
         let busy = BusyFlags {
@@ -680,7 +712,7 @@ mod tests {
     #[test]
     fn tariff_change_does_not_reprice_history() {
         let mut e = EnergyState::new_default();
-        e.set_price_per_kwh(1.20);
+        e.apply_settings(1.20, 20.0).unwrap();
         let t0 = Instant::now();
         let local = Local::now();
         e.ingest(&[sample("0", 100.0, 0.0)], idle_busy(), t0, local);
@@ -775,6 +807,26 @@ mod tests {
                 .to_string_lossy()
                 .contains("corrupt")
         }));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn corrupt_backup_never_overwrites_existing_candidate() {
+        let dir = tempfile_dir();
+        let path = dir.join("energy.json");
+        let existing_backup = dir.join("energy.json.corrupt-fixed");
+        std::fs::write(&path, b"corrupt source").unwrap();
+        std::fs::write(&existing_backup, b"existing backup").unwrap();
+
+        let (_e, warning) = backup_corrupt_store_at(&path, "corrupt", "fixed");
+
+        assert!(warning.unwrap().contains("backup was created"));
+        assert_eq!(std::fs::read(&existing_backup).unwrap(), b"existing backup");
+        assert_eq!(
+            std::fs::read(dir.join("energy.json.corrupt-fixed-1")).unwrap(),
+            b"corrupt source"
+        );
+        assert!(!path.exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
