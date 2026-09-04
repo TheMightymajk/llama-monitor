@@ -51,6 +51,7 @@ pub struct EnergySnapshot {
 
 pub struct EnergyState {
     ingest_enabled: bool,
+    load_warning: Option<String>,
     save_warning: Option<String>,
     price_per_kwh: f64,
     price_changed_at: DateTime<Local>,
@@ -235,6 +236,7 @@ impl EnergyState {
     pub fn new_default() -> Self {
         Self {
             ingest_enabled: true,
+            load_warning: None,
             save_warning: None,
             price_per_kwh: 1.0,
             price_changed_at: Local::now(),
@@ -319,6 +321,7 @@ impl EnergyState {
             .collect();
         Self {
             ingest_enabled: true,
+            load_warning: None,
             save_warning: None,
             price_per_kwh: store.price_per_kwh,
             price_changed_at: store.price_changed_at,
@@ -446,7 +449,10 @@ impl EnergyState {
         EnergySnapshot {
             available,
             telemetry_stale: !available,
-            save_warning: self.save_warning.clone(),
+            save_warning: self
+                .save_warning
+                .clone()
+                .or_else(|| self.load_warning.clone()),
             currency: "PLN".to_string(),
             price_per_kwh: self.price_per_kwh,
             inference_util_threshold: self.inference_util_threshold,
@@ -474,8 +480,8 @@ impl EnergyState {
         self.ingest_enabled = enabled;
     }
 
-    pub fn set_save_warning(&mut self, warning: Option<String>) {
-        self.save_warning = warning;
+    pub fn set_load_warning(&mut self, warning: Option<String>) {
+        self.load_warning = warning;
     }
 
     fn add_delta(totals: &mut EnergyTotals, delta_kwh: f64, delta_cost: f64, is_inference: bool) {
@@ -957,6 +963,29 @@ mod tests {
 
         let bytes = std::fs::read(&path).unwrap();
         serde_json::from_slice::<EnergyStore>(&bytes).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn load_warning_survives_successful_save() {
+        let dir = tempfile_dir();
+        let path = dir.join("energy.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let (mut loaded, warning) = load_energy_state(&path);
+        loaded.set_load_warning(warning.clone());
+        let energy = Arc::new(Mutex::new(loaded));
+        let save_gate = Arc::new(tokio::sync::Mutex::new(()));
+
+        save_with_gate(&energy, &path, &save_gate).await.unwrap();
+
+        assert_eq!(
+            energy
+                .lock()
+                .unwrap()
+                .snapshot(Instant::now(), Local::now())
+                .save_warning,
+            warning
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

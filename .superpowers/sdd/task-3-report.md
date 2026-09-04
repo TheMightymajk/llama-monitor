@@ -73,3 +73,27 @@ cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
 Result: 104 tests passed; Clippy passed.
+
+## Final review fix: persistent load warnings
+
+**Finding:** Tokio's first interval tick completes immediately, so the startup save could clear a
+corrupt-load warning before an HTTP or WebSocket client observed it.
+
+**Fix:**
+
+- Consume the interval's immediate first tick before entering the periodic save loop.
+- Store load-origin warnings separately from transient save failures.
+- Continue exposing both through the existing WebSocket `save_warning` field, prioritizing an
+  active save failure and returning to the sticky load warning after a successful save.
+- Added a regression test covering corrupt load, successful gated save, and snapshot warning
+  persistence.
+
+Verification:
+
+```text
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --check
+```
+
+Result: 110 tests passed; Clippy and rustfmt passed.

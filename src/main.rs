@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
 
     let (mut energy_state, energy_warning) =
         energy::load_energy_state(&app_config.energy_stats_file);
-    energy_state.set_save_warning(energy_warning.clone());
+    energy_state.set_load_warning(energy_warning.clone());
     if let Some(warning) = energy_warning {
         eprintln!("[warn] {warning}");
     }
@@ -189,6 +189,7 @@ async fn main() -> Result<()> {
         let ingest_enabled = ingest_enabled.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(ENERGY_SAVE_INTERVAL);
+            interval.tick().await;
             loop {
                 interval.tick().await;
                 if !ingest_enabled.load(Ordering::SeqCst) {
