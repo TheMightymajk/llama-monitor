@@ -5,6 +5,7 @@ mod llama;
 mod models;
 mod presets;
 mod state;
+mod usage;
 mod web;
 
 use anyhow::Result;
@@ -64,6 +65,16 @@ async fn main() -> Result<()> {
     // Load UI settings from disk (or defaults)
     let ui_settings = state::load_ui_settings(&app_config.ui_settings_file);
 
+    // Load lifetime usage counters
+    let usage = usage::load_usage_stats(&app_config.usage_stats_file);
+    println!(
+        "[info] Usage stats: {} prompt / {} predicted / {} cached tokens from {}",
+        usage.prompt_tokens,
+        usage.predicted_tokens,
+        usage.cached_tokens,
+        app_config.usage_stats_file.display()
+    );
+
     let state = state::AppState::new(
         initial_presets,
         app_config.presets_file.clone(),
@@ -72,6 +83,8 @@ async fn main() -> Result<()> {
         app_config.gpu_env_file.clone(),
         ui_settings,
         app_config.ui_settings_file.clone(),
+        usage,
+        app_config.usage_stats_file.clone(),
     );
 
     if let Some(ref dir) = app_config.models_dir {

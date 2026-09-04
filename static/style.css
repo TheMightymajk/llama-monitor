@@ -125,7 +125,7 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
     background: var(--bg-input); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 7px 9px; font-size: 0.85rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.control-bar .preset-label { flex: 1 1 260px; max-width: 460px; }
+.control-bar .preset-label { flex: 1 1 260px; }
 .control-bar .num-xs { flex: 0 0 auto; }
 .control-bar select { width: 100%; }
 .control-bar .num-xs input { width: 72px; }
@@ -173,8 +173,9 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
     box-shadow: var(--shadow-soft), var(--glass-edge);
     padding: 14px 16px; margin-bottom: 14px;
 }
-.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 10px; }
 .panel-head h2 { margin: 0; }
+.panel-head-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .source-tag {
     font-size: 0.68rem; color: var(--text-dim); border: 1px solid var(--border);
     border-radius: 999px; padding: 2px 8px; text-transform: uppercase; letter-spacing: 0.04em;
@@ -235,6 +236,8 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
 .metric-value.status-ok { color: var(--ok); }
 .metric-value.status-busy { color: var(--amber); }
 .metric-value.status-err { color: var(--error); }
+.metric-value.amber { color: var(--amber); text-shadow: 0 0 12px color-mix(in srgb, var(--amber) 35%, transparent); }
+.metric-sub { font-size: 0.68rem; color: var(--text-dim); margin-top: 2px; }
 
 .log-panel {
     background: rgba(0, 0, 0, 0.35); border: 1px solid var(--glass-border); border-radius: var(--radius);

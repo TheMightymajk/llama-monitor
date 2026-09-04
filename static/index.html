@@ -133,6 +133,23 @@
             </div>
         </section>
 
+        <section class="panel" id="lifetime-panel">
+            <div class="panel-head">
+                <h2 title="Lifetime totals survive monitor and llama-server restarts. Saved $ = local tokens × cloud API rates (GPU power not subtracted).">Lifetime</h2>
+                <div class="panel-head-actions">
+                    <span class="source-tag" id="usage-rates-tag" title="Comparison rates">rates Sep 2026</span>
+                    <button type="button" class="btn-sm btn-preset" id="btn-usage-reset" title="Reset lifetime counters">Reset</button>
+                </div>
+            </div>
+            <div class="inference-panel" id="lifetime">
+                <div class="metric-card"><div class="metric-label">Prompt processed</div><div class="metric-value prompt" id="u-prompt">—</div></div>
+                <div class="metric-card"><div class="metric-label">Generated</div><div class="metric-value gen" id="u-gen">—</div></div>
+                <div class="metric-card"><div class="metric-label">Cache hits</div><div class="metric-value ctx" id="u-cache">—</div><div class="metric-sub" id="u-cache-ratio">—</div></div>
+                <div class="metric-card"><div class="metric-label">Saved vs Luna</div><div class="metric-value amber" id="u-luna">—</div><div class="metric-sub">GPT-5.6 Luna</div></div>
+                <div class="metric-card"><div class="metric-label">Saved vs Qwen API</div><div class="metric-value amber" id="u-qwen">—</div><div class="metric-sub">Qwen3.8-27B Alibaba</div></div>
+            </div>
+        </section>
+
         <section class="panel">
             <h2>GPUs</h2>
             <div class="table-wrap">

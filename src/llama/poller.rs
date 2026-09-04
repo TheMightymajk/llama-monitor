@@ -76,13 +76,24 @@ pub async fn llama_metrics_poller(state: AppState) {
                 0.0
             };
 
-            let mut m = state.llama_metrics.lock().unwrap();
-            m.prompt_tokens_per_sec = prompt_tps;
-            m.generation_tokens_per_sec = gen_tps;
-            m.prompt_tokens_total = prom.prompt_tokens_total as u64;
-            m.predicted_tokens_total = prom.predicted_tokens_total as u64;
-            m.kv_cache_tokens = prom.n_tokens_max;
-            m.requests_processing = prom.requests_processing;
+            let prompt_total = prom.prompt_tokens_total as u64;
+            let predicted_total = prom.predicted_tokens_total as u64;
+
+            {
+                let mut m = state.llama_metrics.lock().unwrap();
+                m.prompt_tokens_per_sec = prompt_tps;
+                m.generation_tokens_per_sec = gen_tps;
+                m.prompt_tokens_total = prompt_total;
+                m.predicted_tokens_total = predicted_total;
+                m.kv_cache_tokens = prom.n_tokens_max;
+                m.requests_processing = prom.requests_processing;
+            }
+
+            {
+                let mut usage = state.usage.lock().unwrap();
+                usage.apply_prometheus(prompt_total, predicted_total);
+                let _ = usage.maybe_save(&state.usage_path, false);
+            }
         }
 
         // Poll /slots — get per-slot processing state + total context

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use futures_util::StreamExt;
 use warp::Filter;
 
 use crate::config::AppConfig;
@@ -27,7 +29,8 @@ pub fn api_routes(
     let get_settings = api_get_settings(state.clone());
     let put_settings = api_put_settings(state.clone());
     let browse = api_browse();
-    let chat = api_chat(state);
+    let chat = api_chat(state.clone());
+    let usage_reset = api_usage_reset(state);
 
     start
         .or(stop)
@@ -44,6 +47,7 @@ pub fn api_routes(
         .or(get_settings)
         .or(browse)
         .or(chat)
+        .or(usage_reset)
 }
 
 fn api_start(
@@ -392,6 +396,22 @@ fn api_browse() -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Reje
         })
 }
 
+fn api_usage_reset(
+    state: AppState,
+) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
+    warp::path!("api" / "usage" / "reset")
+        .and(warp::post())
+        .map(move || {
+            let mut usage = state.usage.lock().unwrap();
+            usage.reset();
+            let _ = usage.maybe_save(&state.usage_path, true);
+            warp::reply::json(&serde_json::json!({
+                "ok": true,
+                "usage": usage.snapshot(),
+            }))
+        })
+}
+
 fn api_chat(
     state: AppState,
 ) -> impl Filter<Extract = (impl warp::Reply,), Error = warp::Rejection> + Clone {
@@ -434,7 +454,31 @@ fn api_chat(
                                 .and_then(|v| v.to_str().ok())
                                 .unwrap_or("application/json")
                                 .to_string();
-                            let stream = resp.bytes_stream();
+                            let usage_state = state.clone();
+                            let tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+                            let stream = {
+                                let tail = tail.clone();
+                                resp.bytes_stream().map(move |chunk| {
+                                    if let Ok(ref bytes) = chunk
+                                        && let Ok(text) = std::str::from_utf8(bytes)
+                                    {
+                                        let mut buf = tail.lock().unwrap();
+                                        buf.push_str(text);
+                                        if buf.len() > 16_384 {
+                                            let drain = buf.len() - 8_192;
+                                            buf.drain(..drain);
+                                        }
+                                        if let Some(n) = crate::usage::parse_cache_n(&buf) {
+                                            let mut usage = usage_state.usage.lock().unwrap();
+                                            if usage.add_cached(n) {
+                                                let _ = usage
+                                                    .maybe_save(&usage_state.usage_path, false);
+                                            }
+                                        }
+                                    }
+                                    chunk
+                                })
+                            };
                             let body = warp::hyper::Body::wrap_stream(stream);
                             Ok::<_, warp::Rejection>(
                                 warp::http::Response::builder()

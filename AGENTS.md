@@ -34,6 +34,7 @@ src/
   llama/               server.rs (subprocess start/stop), metrics.rs (Prometheus parser),
                        poller.rs (async /health, /metrics, /slots polling)
   presets/             ModelPreset CRUD, persisted to ~/.config/llama-monitor/presets.json
+  usage/               Lifetime token counters + $ savings, persisted to usage-stats.json
   models/              GGUF discovery in a configured directory
   web/                 warp routes: api.rs (REST + file browser + chat proxy),
                        ws.rs (WebSocket push), static_assets.rs (embedded frontend)
@@ -56,7 +57,7 @@ Data flow: GPU poller (500 ms, OS thread) and llama poller (1 s, tokio task) wri
   `gpu/nvidia.rs`, `llama/metrics.rs`) must stay tolerant of new fields; add fixtures when
   changing parsing logic.
 - **Config precedence:** CLI flags < persisted UI settings (`~/.config/llama-monitor/`) —
-  `ui-settings.json`, `gpu-env.json`, `presets.json`. Writes are atomic (tmp file + rename);
+  `ui-settings.json`, `gpu-env.json`, `presets.json`, `usage-stats.json`. Writes are atomic (tmp file + rename);
   keep it that way.
 - **Cross-platform target: Linux + macOS** (x86_64 and aarch64, see release workflow).
   Avoid Linux-only syscalls; `which` is used for command detection.

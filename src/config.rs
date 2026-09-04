@@ -23,6 +23,7 @@ pub struct AppConfig {
     pub gpu_arch_override: Option<String>,
     pub gpu_devices_override: Option<String>,
     pub ui_settings_file: PathBuf,
+    pub usage_stats_file: PathBuf,
 }
 
 impl AppConfig {
@@ -50,6 +51,7 @@ impl AppConfig {
             gpu_arch_override: args.gpu_arch,
             gpu_devices_override: args.gpu_devices,
             ui_settings_file: config_dir.join("ui-settings.json"),
+            usage_stats_file: config_dir.join("usage-stats.json"),
         }
     }
 }
@@ -89,6 +91,13 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("ui-settings")
+        );
+        assert!(
+            config
+                .usage_stats_file
+                .to_str()
+                .unwrap()
+                .contains("usage-stats")
         );
     }
 

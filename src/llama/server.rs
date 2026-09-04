@@ -292,6 +292,10 @@ pub async fn stop_server(state: &AppState) -> Result<()> {
         let mut m = state.llama_metrics.lock().unwrap();
         *m = crate::llama::metrics::LlamaMetrics::default();
     }
+    {
+        let mut usage = state.usage.lock().unwrap();
+        let _ = usage.maybe_save(&state.usage_path, true);
+    }
     state.push_log("[monitor] Server stopped.".into());
     Ok(())
 }

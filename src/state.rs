@@ -8,6 +8,7 @@ use crate::llama::metrics::LlamaMetrics;
 use crate::llama::server::ServerConfig;
 use crate::models::DiscoveredModel;
 use crate::presets::ModelPreset;
+use crate::usage::UsageStats;
 
 const MAX_LOG_LINES: usize = 500;
 
@@ -81,9 +82,12 @@ pub struct AppState {
     pub gpu_env_path: PathBuf,
     pub ui_settings: Arc<Mutex<UiSettings>>,
     pub ui_settings_path: PathBuf,
+    pub usage: Arc<Mutex<UsageStats>>,
+    pub usage_path: PathBuf,
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         presets: Vec<ModelPreset>,
         presets_path: PathBuf,
@@ -92,6 +96,8 @@ impl AppState {
         gpu_env_path: PathBuf,
         ui_settings: UiSettings,
         ui_settings_path: PathBuf,
+        usage: UsageStats,
+        usage_path: PathBuf,
     ) -> Self {
         let discovered = models_dir
             .as_ref()
@@ -115,10 +121,19 @@ impl AppState {
             gpu_env_path,
             ui_settings: Arc::new(Mutex::new(ui_settings)),
             ui_settings_path,
+            usage: Arc::new(Mutex::new(usage)),
+            usage_path,
         }
     }
 
     pub fn push_log(&self, line: String) {
+        // Extract KV cache hits from llama-server timings before storing the line.
+        if let Some(n) = crate::usage::parse_cache_n(&line) {
+            let mut usage = self.usage.lock().unwrap();
+            if usage.add_cached(n) {
+                let _ = usage.maybe_save(&self.usage_path, false);
+            }
+        }
         let mut logs = self.server_logs.lock().unwrap();
         if logs.len() >= MAX_LOG_LINES {
             logs.pop_front();

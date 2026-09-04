@@ -680,6 +680,67 @@ function fmtMib(mib) {
     return (mib / 1024).toFixed(1);
 }
 
+function fmtTokens(n) {
+    if (n == null || Number.isNaN(n)) return '—';
+    const v = Number(n);
+    if (v >= 1_000_000) return (v / 1_000_000).toFixed(2) + 'M';
+    if (v >= 10_000) return (v / 1_000).toFixed(1) + 'k';
+    return v.toLocaleString();
+}
+
+function fmtUsd(n) {
+    if (n == null || Number.isNaN(n)) return '—';
+    const v = Number(n);
+    if (v === 0) return '$0.00';
+    if (v < 0.01) return '$' + v.toFixed(4);
+    if (v < 1) return '$' + v.toFixed(3);
+    return '$' + v.toFixed(2);
+}
+
+function applyUsage(u) {
+    if (!u) {
+        text('u-prompt', '—');
+        text('u-gen', '—');
+        text('u-cache', '—');
+        text('u-cache-ratio', '—');
+        text('u-luna', '—');
+        text('u-qwen', '—');
+        return;
+    }
+    text('u-prompt', fmtTokens(u.prompt_tokens));
+    text('u-gen', fmtTokens(u.predicted_tokens));
+    text('u-cache', fmtTokens(u.cached_tokens));
+    const ratio = u.cache_hit_ratio != null ? (u.cache_hit_ratio * 100).toFixed(1) + '% hit' : '—';
+    text('u-cache-ratio', ratio);
+    text('u-luna', fmtUsd(u.saved_luna_usd));
+    text('u-qwen', fmtUsd(u.saved_qwen_usd));
+    if (u.rates) {
+        const tag = $('usage-rates-tag');
+        tag.title =
+            'GPT-5.6 Luna $' + u.rates.luna_input_per_m + '/$'+ u.rates.luna_output_per_m +
+            ' · Qwen3.8-27B $' + u.rates.qwen_input_per_m + '/$' + u.rates.qwen_output_per_m +
+            ' per 1M in/out · ' + (u.rates.label || '');
+    }
+}
+
+async function resetUsage() {
+    const ok = await confirmAction(
+        'Reset lifetime stats',
+        'Clear all lifetime token counters and savings? This cannot be undone.',
+        'Reset',
+        true
+    );
+    if (!ok) return;
+    const resp = await fetch('/api/usage/reset', { method: 'POST' });
+    const data = await resp.json();
+    if (!data.ok) {
+        showToast('Reset failed', 'error');
+        return;
+    }
+    applyUsage(data.usage);
+    showToast('Lifetime stats reset', 'success');
+}
+
 function applyWsPayload(d) {
     serverRunning = d.server_running;
     serverStartedAt = d.server_started_at || null;
@@ -705,6 +766,8 @@ function applyWsPayload(d) {
     }
     text('m-slots', l.slots_idle + l.slots_processing > 0 ? l.slots_idle + ' idle / ' + l.slots_processing + ' busy' : '—');
     text('hero-reqs', l.requests_processing != null ? String(l.requests_processing) : '—');
+
+    applyUsage(d.usage);
 
     const statusEl = $('m-status');
     statusEl.textContent = l.status || '—';
@@ -964,6 +1027,7 @@ $('btn-preset-edit').addEventListener('click', () => openPresetModal('edit'));
 $('btn-preset-copy').addEventListener('click', copyPreset);
 $('btn-preset-delete').addEventListener('click', deletePreset);
 $('btn-preset-reset').addEventListener('click', resetPresets);
+$('btn-usage-reset').addEventListener('click', resetUsage);
 $('btn-preset-close').addEventListener('click', closePresetModal);
 $('btn-preset-cancel').addEventListener('click', closePresetModal);
 $('preset-form').addEventListener('submit', savePreset);

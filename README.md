@@ -23,6 +23,7 @@ Web dashboard for managing [llama.cpp](https://github.com/ggerganov/llama.cpp) s
 - **Server Management** -- Start/stop llama.cpp server from configurable presets
 - **Real-time GPU Monitoring** -- Temperature, load, VRAM, power, clock speeds (AMD ROCm + NVIDIA)
 - **Inference Metrics** -- Prompt/generation speed, KV cache usage, slot status via Prometheus endpoint
+- **Lifetime Usage & Savings** -- Persistent prompt/generation/cache-hit totals with estimated $ saved vs GPT-5.6 Luna and Qwen3.8-27B API
 - **Customizable Presets** -- Create, edit, copy, delete model presets with all llama.cpp parameters; persisted to disk
 - **File Browser** -- Browse the filesystem to select llama-server binary and .gguf model files
 - **Integrated Chat** -- Streaming chat UI with reasoning/thinking block support, proxied to the configured port
@@ -116,10 +117,14 @@ The preset editor groups parameters into collapsible sections:
 - **Speculative Decoding** -- ngram-mod, draft model, draft min/max
 - **Advanced** -- Seed, system prompt file, extra CLI args
 
+### Lifetime usage
+
+Prompt processed, generation, and KV prefix-cache hit totals are accumulated across llama-server and monitor restarts into `~/.config/llama-monitor/usage-stats.json`. The Dashboard Lifetime panel estimates dollars saved versus GPT-5.6 Luna and official Qwen3.8-27B Alibaba API rates (GPU electricity is not subtracted). Use **Reset** to clear counters.
+
 ## Web UI
 
 ### Server Tab
-Control bar with preset selector and port. Start/stop the server. Live inference metrics (prompt/generation speed, context usage, slot status) and GPU monitoring table (temperature, load, VRAM, power, clocks).
+Control bar with preset selector and port. Start/stop the server. Live inference metrics (prompt/generation speed, context usage, slot status), lifetime token/savings panel, and GPU monitoring table (temperature, load, VRAM, power, clocks).
 
 ### Chat Tab
 Streaming chat interface that proxies to the running llama-server's `/v1/chat/completions` endpoint on the configured port. Supports reasoning/thinking blocks and Markdown rendering.
@@ -135,6 +140,8 @@ src/
   cli.rs               -- Clap argument definitions
   config.rs            -- AppConfig resolved from CLI args
   state.rs             -- Shared AppState (Arc<Mutex<...>>), UiSettings persistence
+  usage/
+    mod.rs             -- Lifetime token counters, cache hits, $ savings, usage-stats.json
   gpu/
     mod.rs             -- GpuMetrics, GpuBackend trait, auto-detection
     rocm.rs            -- AMD ROCm via rocm-smi JSON
@@ -189,6 +196,7 @@ llama-server /metrics       -->  Llama Poller (1s)   --> AppState
 | POST | `/api/presets/reset` | Reset presets to defaults |
 | GET | `/api/settings` | Get persisted UI settings |
 | PUT | `/api/settings` | Save UI settings |
+| POST | `/api/usage/reset` | Reset lifetime token / savings counters |
 | GET | `/api/browse?path=&filter=` | Browse filesystem (filter: `gguf`, `executable`) |
 | GET | `/api/gpu-env` | Get GPU environment config |
 | PUT | `/api/gpu-env` | Save GPU environment config |
