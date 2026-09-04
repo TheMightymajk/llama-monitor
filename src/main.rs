@@ -222,6 +222,10 @@ async fn main() -> Result<()> {
     let shutdown_state = state.clone();
     let shutdown_ingest_enabled = ingest_enabled.clone();
     let shutdown_save_gate = state.energy_save_gate.clone();
+    // After the energy sequence finishes, force-exit if HTTP drain hangs (e.g. open /ws).
+    // Do NOT wrap the whole server future in this timeout — that would kill a healthy
+    // process after SERVER_DRAIN_TIMEOUT of normal uptime.
+    let (drain_watchdog_tx, drain_watchdog_rx) = tokio::sync::oneshot::channel::<()>();
     let (_, server) = warp::serve(routes).bind_with_graceful_shutdown((host, port), async move {
         wait_for_shutdown_signal().await;
         println!("[info] Shutdown requested; saving energy history");
@@ -256,13 +260,16 @@ async fn main() -> Result<()> {
             }
         }
         println!("[info] Energy shutdown sequence complete");
+        let _ = drain_watchdog_tx.send(());
     });
-    match tokio::time::timeout(SERVER_DRAIN_TIMEOUT, server).await {
-        Ok(()) => {}
-        Err(_) => {
+    tokio::spawn(async move {
+        if drain_watchdog_rx.await.is_ok() {
+            tokio::time::sleep(SERVER_DRAIN_TIMEOUT).await;
             eprintln!("[warn] Timed out waiting for HTTP server drain; exiting");
+            std::process::exit(0);
         }
-    }
+    });
+    server.await;
     std::process::exit(0);
 }
 
