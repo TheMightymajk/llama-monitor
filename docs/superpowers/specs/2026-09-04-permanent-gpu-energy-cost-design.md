@@ -1,7 +1,7 @@
 # Permanent GPU Energy Cost — Design Spec
 
 **Date:** 2026-09-04  
-**Status:** Approved for planning (pending user review of this document)  
+**Status:** Approved for implementation planning  
 **Branch context:** Llama Monitor fork — extend Lifetime dashboard with permanent GPU energy cost
 
 ## Goal
@@ -140,11 +140,15 @@ Wall-clock jumps and DST must not change integrated energy. Startup log prints t
 
 ## Integration algorithm
 
+### Numeric precision
+
+Power telemetry may enter the module as `f32`, but all integration, energy, cost, and persisted accumulator calculations use `f64`. Convert each valid power sample to `f64` before averaging or multiplying by `dt`. Permanent counters must not accumulate in `f32`.
+
 ### Per-GPU base (RAM only)
 
 For each GPU id currently reporting:
 
-- `prev_power_w: Option<f32>`
+- `prev_power_w: Option<f64>`
 - `prev_instant: Option<Instant>`
 
 When a GPU disappears from telemetry: drop or invalidate its base. On reappearance: first sample establishes base only (no energy).
@@ -238,6 +242,7 @@ Validation:
 
 - Missing/false `confirm` → 400
 - Resets: lifetime totals, daily history, **and session** energy/cost (documented behavior for UI consistency)
+- Reset lifetime also clears all per-GPU integration bases. The first valid GPU sample following reset establishes a new baseline and does not add energy. This prevents an interval spanning the reset operation from being charged into the fresh lifetime/session counters.
 - Does not reset tokens / Luna / Qwen
 - Does not stop GPU poller or llama-server
 - Immediate atomic force-save
@@ -330,14 +335,16 @@ Saves via `PUT /api/energy/settings` only.
 
 Handle at least **SIGINT** and **SIGTERM** (scripts stop the monitor with SIGTERM).
 
-On signal:
+On shutdown:
 
-1. Stop accepting new mutating energy ops where practical  
-2. Final force-save (bounded; log failure, do not hang forever)  
-3. Shut down HTTP server  
-4. Exit  
+1. Signal the GPU energy ingest path to stop.
+2. Stop the periodic save ticker.
+3. Wait for any in-flight save to finish, with a bounded timeout.
+4. Take the final `EnergyStore` snapshot.
+5. Perform the final atomic save.
+6. Shut down HTTP and exit.
 
-Final save failure must not block process exit indefinitely.
+No ingest may occur after the final snapshot is taken. Final save failure must be logged but must not block process exit indefinitely.
 
 ---
 
@@ -351,7 +358,7 @@ Required cases:
 2. First sample after restart does not charge offline gap  
 3. Tariff 1.20 → 1.40 does not reprice historical cost; new deltas use 1.40  
 4. Token Reset does not clear energy  
-5. Reset lifetime requires `confirm: true`; clears lifetime + daily + session; tokens untouched  
+5. Reset lifetime requires `confirm: true`; clears lifetime + daily + session + per-GPU bases; first sample after reset adds no energy; tokens untouched  
 6. Trapezoid per GPU; one GPU missing sample does not discard others’ deltas  
 7. dt > 5s resets base without energy; subsequent samples work  
 8. Corrupt JSON → backup + new history warning path  
@@ -380,11 +387,15 @@ Likely add `chrono` (local DateTime, formatting). Prefer minimal extras; no heav
 
 ## Spec self-review notes
 
-- No TBD placeholders remaining for core behavior  
-- Savings net formula explicitly rejected — Luna/Qwen unchanged  
-- Session on lifetime-reset: **zeroed** (documented)  
-- Settings live only in `energy.json`  
-- Instant vs local DateTime split is mandatory  
-- Disk I/O never under `energy` lock during write body  
+- Markdown is unescaped plain CommonMark (headings, bold, tables render normally)
+- Integration / cost / persisted accumulators are `f64` (power may enter as `f32`)
+- Lifetime reset clears per-GPU bases; first post-reset sample is baseline-only
+- Shutdown stops ingest before final snapshot/save; no ingest after final snapshot
+- No TBD placeholders remaining for core behavior
+- Savings net formula explicitly rejected — Luna/Qwen unchanged
+- Session on lifetime-reset: **zeroed** (documented)
+- Settings live only in `energy.json`
+- Instant vs local DateTime split is mandatory
+- Disk I/O never under `energy` lock during write body
 
-Ambiguity resolved: busy flags come from existing `LlamaMetrics` / slots polling already in AppState — energy module does not poll HTTP itself.
+Ambiguity resolved: busy flags come from existing `LlamaMetrics` / slots polling already in AppState — energy module does not poll HTTP itself. Use `slots_processing > 0` as the AppState equivalent of “any slot `is_processing`”.
