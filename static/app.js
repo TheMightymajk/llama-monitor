@@ -24,7 +24,9 @@ let settingsSaveTimer = null;
 let lastRunningModel = null;
 let logAutoScroll = true;
 let logUserPinnedBottom = true;
+let logSelecting = false;
 let lastLogView = { logs: [], log_source: {} };
+let lastRenderedLogs = [];
 let lastEnergySnapshot = null;
 
 function logSourceLabel(kind) {
@@ -38,6 +40,22 @@ function logStatusLabel(status) {
     if (status === 'waiting_for_file') return 'Waiting for file';
     if (status === 'error') return 'Error';
     return 'Idle';
+}
+
+function logPanelHasLiveSelection() {
+    if (logSelecting) return true;
+    const el = $('log-panel');
+    const sel = window.getSelection();
+    if (!el || !sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+    return el.contains(sel.anchorNode) || el.contains(sel.focusNode);
+}
+
+function logsArePrefix(prev, next) {
+    if (prev.length > next.length) return false;
+    for (let i = 0; i < prev.length; i++) {
+        if (prev[i] !== next[i]) return false;
+    }
+    return true;
 }
 
 function applyLogPanel(d) {
@@ -56,9 +74,29 @@ function applyLogPanel(d) {
     text('log-line-count', visible.length + ' / ' + all.length);
 
     const el = $('log-panel');
-    const stick = logAutoScroll && logUserPinnedBottom;
-    el.textContent = visible.join('\n');
-    if (stick) el.scrollTop = el.scrollHeight;
+    const selecting = logPanelHasLiveSelection();
+    const unchanged = visible.length === lastRenderedLogs.length
+        && logsArePrefix(lastRenderedLogs, visible);
+    const canAppend = lastRenderedLogs.length > 0
+        && visible.length > lastRenderedLogs.length
+        && logsArePrefix(lastRenderedLogs, visible);
+    const textNode = el.firstChild && el.firstChild.nodeType === Node.TEXT_NODE
+        ? el.firstChild
+        : null;
+
+    if (unchanged) {
+        // already on screen
+    } else if (canAppend && textNode) {
+        // appendData keeps existing ranges; replacing textContent would not
+        textNode.appendData('\n' + visible.slice(lastRenderedLogs.length).join('\n'));
+        lastRenderedLogs = visible.slice();
+    } else if (!selecting) {
+        el.textContent = visible.join('\n');
+        lastRenderedLogs = visible.slice();
+    }
+    if (logAutoScroll && logUserPinnedBottom && !selecting) {
+        el.scrollTop = el.scrollHeight;
+    }
     text('badge-logs', all.length > 0 ? ' ' + all.length : '');
 }
 
@@ -1206,6 +1244,15 @@ $('btn-chat-clear').addEventListener('click', clearChat);
 $('btn-send').addEventListener('click', sendChat);
 $('browse-server-path').addEventListener('click', () => openFileBrowser('set-server-path', 'executable'));
 $('browse-server-cwd').addEventListener('click', () => openFileBrowser('set-server-cwd', 'dir'));
+$('log-panel').addEventListener('mousedown', e => {
+    if (e.button === 0) logSelecting = true;
+});
+window.addEventListener('mouseup', () => {
+    logSelecting = false;
+});
+window.addEventListener('blur', () => {
+    logSelecting = false;
+});
 $('log-panel').addEventListener('scroll', () => {
     const el = $('log-panel');
     logUserPinnedBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
