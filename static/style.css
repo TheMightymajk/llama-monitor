@@ -239,6 +239,34 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
 .metric-value.status-err { color: var(--error); }
 .metric-value.amber { color: var(--amber); text-shadow: 0 0 12px color-mix(in srgb, var(--amber) 35%, transparent); }
 .metric-sub { font-size: 0.68rem; color: var(--text-dim); margin-top: 2px; }
+.energy-card { flex-basis: 220px; }
+.energy-card > summary {
+    cursor: pointer; list-style: none; position: relative; padding-right: 18px;
+}
+.energy-card > summary::-webkit-details-marker { display: none; }
+.energy-card > summary::after {
+    content: '›'; position: absolute; top: 50%; right: 0; color: var(--text-dim);
+    font-size: 1rem; transform: translateY(-50%) rotate(90deg); transition: transform 0.18s ease;
+}
+.energy-card[open] > summary::after { transform: translateY(-50%) rotate(-90deg); }
+.energy-details {
+    border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px;
+    font-size: 0.7rem; color: var(--text-dim);
+}
+.energy-row {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+    padding: 4px 0;
+}
+.energy-row > span:last-child {
+    color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-align: right; font-variant-numeric: tabular-nums;
+}
+.energy-note { margin: -2px 0 5px; font-size: 0.64rem; }
+.energy-warning {
+    color: var(--error); border-left: 2px solid var(--error); padding: 5px 7px;
+    margin: 6px 0; overflow-wrap: anywhere;
+}
+.energy-details .btn-sm { margin-top: 8px; }
 
 .log-panel {
     background: rgba(0, 0, 0, 0.35); border: 1px solid var(--glass-border); border-radius: var(--radius);
@@ -356,6 +384,10 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
 .modal-body::-webkit-scrollbar { width: 6px; }
 .modal-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 #confirm-message { color: var(--text); font-size: 0.9rem; line-height: 1.5; padding: 8px 0 12px; }
+#confirm-details {
+    color: var(--text-dim); font-size: 0.82rem; line-height: 1.5;
+    margin: -4px 0 12px 20px;
+}
 
 .modal-buttons {
     display: flex; gap: 10px; justify-content: flex-end;
@@ -490,6 +522,7 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
     .control-bar .preset-label { flex: 1 1 100%; }
     .spec-grid { grid-template-columns: 1fr 1fr; }
     .metric-card { min-width: 0; flex: 1 1 calc(50% - 8px); }
+    .energy-card { flex-basis: 100%; }
     .modal { width: 95vw; }
     .modal-row { flex-direction: column; gap: 0; }
     .preset-actions { flex-wrap: wrap; }

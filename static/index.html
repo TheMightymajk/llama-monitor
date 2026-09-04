@@ -144,6 +144,27 @@
                 <div class="metric-card"><div class="metric-label">Cache hits</div><div class="metric-value ctx" id="u-cache">—</div><div class="metric-sub" id="u-cache-ratio">—</div></div>
                 <div class="metric-card"><div class="metric-label">Saved vs Luna</div><div class="metric-value amber" id="u-luna">—</div><div class="metric-sub">GPT-5.6 Luna</div></div>
                 <div class="metric-card"><div class="metric-label">Saved vs Qwen API</div><div class="metric-value amber" id="u-qwen">—</div><div class="metric-sub">Qwen3.8-27B Alibaba</div></div>
+                <details class="metric-card energy-card" id="energy-card">
+                    <summary>
+                        <div class="metric-label">GPU Energy Cost</div>
+                        <div class="metric-value amber" id="e-inference-cost">—</div>
+                        <div class="metric-sub"><span id="e-inference-energy">—</span> · GPU energy only</div>
+                        <div class="metric-sub" id="e-tariff">— PLN/kWh</div>
+                    </summary>
+                    <div class="energy-details" id="energy-details">
+                        <div class="energy-row"><span>Session inference</span><span><span id="e-sess-cost">—</span> · <span id="e-sess-energy">—</span></span></div>
+                        <div class="energy-row"><span>Today</span><span><span id="e-today-cost">—</span> · <span id="e-today-energy">—</span></span></div>
+                        <div class="energy-row"><span>Last 7 days</span><span><span id="e-7d-cost">—</span> · <span id="e-7d-energy">—</span></span></div>
+                        <div class="energy-row"><span>Lifetime inference</span><span><span id="e-life-inf-cost">—</span> · <span id="e-life-inf-energy">—</span></span></div>
+                        <div class="energy-row"><span>Total GPU Energy</span><span><span id="e-life-total-cost">—</span> · <span id="e-life-total-energy">—</span></span></div>
+                        <div class="energy-note">includes idle and other GPU workloads</div>
+                        <div class="energy-row"><span>Current tariff</span><span id="e-detail-tariff">— PLN/kWh</span></div>
+                        <div class="energy-row"><span>First measurement</span><span id="e-first">—</span></div>
+                        <div class="energy-row"><span>Aggregation timezone</span><span id="e-tz">—</span></div>
+                        <div class="energy-warning" id="e-warn" hidden></div>
+                        <button type="button" class="btn-sm btn-preset" id="btn-energy-reset">Reset lifetime energy</button>
+                    </div>
+                </details>
             </div>
         </section>
 
@@ -201,6 +222,7 @@
         </div>
         <div class="modal-body">
             <p id="confirm-message"></p>
+            <ul id="confirm-details" hidden></ul>
         </div>
         <div class="modal-buttons">
             <button type="button" class="btn btn-modal-cancel" id="confirm-cancel">Cancel</button>
@@ -251,6 +273,16 @@
                     <input type="text" id="gpu-env-rocm-path" value="/opt/rocm">
                 </label>
                 <div id="gpu-detected-info" class="hint-text"></div>
+            </details>
+
+            <details class="modal-section" open>
+                <summary>Energy Tracking</summary>
+                <label class="modal-field">Electricity price (PLN/kWh)
+                    <input type="number" id="set-energy-price" min="0" step="0.01" value="1">
+                </label>
+                <label class="modal-field">Inference util fallback threshold (%)
+                    <input type="number" id="set-energy-util" min="0" max="100" step="1" value="20">
+                </label>
             </details>
 
         </div>

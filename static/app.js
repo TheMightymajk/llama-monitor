@@ -25,6 +25,7 @@ let lastRunningModel = null;
 let logAutoScroll = true;
 let logUserPinnedBottom = true;
 let lastLogView = { logs: [], log_source: {} };
+let lastEnergySnapshot = null;
 
 function logSourceLabel(kind) {
     if (kind === 'external_file') return 'External file';
@@ -163,10 +164,27 @@ async function loadGpuEnv() {
     }
 }
 
-function openConfigModal() { $('config-modal').classList.add('open'); }
+function openConfigModal() {
+    if (lastEnergySnapshot) {
+        const price = lastEnergySnapshot.price_per_kwh;
+        const threshold = lastEnergySnapshot.inference_util_threshold;
+        if (Number.isFinite(price)) $('set-energy-price').value = price;
+        if (Number.isFinite(threshold)) $('set-energy-util').value = threshold;
+    }
+    $('config-modal').classList.add('open');
+}
 function closeConfigModal() { $('config-modal').classList.remove('open'); }
 
 function saveConfig() {
+    const pricePerKwh = parseFloat($('set-energy-price').value);
+    const inferenceUtilThreshold = parseFloat($('set-energy-util').value);
+    if (!Number.isFinite(pricePerKwh) || pricePerKwh < 0 ||
+        !Number.isFinite(inferenceUtilThreshold) ||
+        inferenceUtilThreshold < 0 || inferenceUtilThreshold > 100) {
+        showToast('Energy settings are invalid', 'error');
+        return;
+    }
+
     clearTimeout(settingsSaveTimer);
     fetch('/api/settings', {
         method: 'PUT',
@@ -184,6 +202,15 @@ function saveConfig() {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(env),
+    }).catch(() => {});
+
+    fetch('/api/energy/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            price_per_kwh: pricePerKwh,
+            inference_util_threshold: inferenceUtilThreshold,
+        }),
     }).catch(() => {});
 
     closeConfigModal();
@@ -309,11 +336,19 @@ function closeConfirmModal(result) {
     }
 }
 
-function confirmAction(title, message, confirmLabel, danger) {
+function confirmAction(title, message, confirmLabel, danger, details = []) {
     return new Promise(resolve => {
         confirmResolver = resolve;
         text('confirm-title', title);
         text('confirm-message', message);
+        const detailList = $('confirm-details');
+        detailList.replaceChildren();
+        details.forEach(detail => {
+            const item = document.createElement('li');
+            item.textContent = detail;
+            detailList.appendChild(item);
+        });
+        detailList.hidden = details.length === 0;
         const ok = $('confirm-ok');
         ok.textContent = confirmLabel;
         ok.className = danger ? 'btn btn-danger' : 'btn btn-start';
@@ -758,6 +793,53 @@ function fmtUsd(n) {
     return '$' + v.toFixed(2);
 }
 
+function formatEnergyKwh(kwh) {
+    if (!Number.isFinite(kwh)) return '—';
+    if (kwh > 0 && kwh < 0.01) return (kwh * 1000).toFixed(1) + ' Wh';
+    return kwh.toFixed(3) + ' kWh';
+}
+
+function formatPln(value) {
+    if (!Number.isFinite(value)) return '—';
+    if (value > 0 && value < 0.01) return '<0.01 PLN';
+    return value.toFixed(2) + ' PLN';
+}
+
+function applyEnergyTotals(prefix, totals, hasMeasurements) {
+    const values = totals || {};
+    text(prefix + '-cost', hasMeasurements ? formatPln(values.inference_cost_pln) : '—');
+    text(prefix + '-energy', hasMeasurements ? formatEnergyKwh(values.inference_energy_kwh) : '—');
+}
+
+function applyEnergy(e) {
+    lastEnergySnapshot = e || null;
+    const lifetime = e?.lifetime || {};
+    const hasMeasurements = !!e?.first_measurement_at ||
+        (Number.isFinite(lifetime.energy_kwh) && lifetime.energy_kwh !== 0) ||
+        (Number.isFinite(lifetime.inference_energy_kwh) && lifetime.inference_energy_kwh !== 0);
+    const tariff = Number.isFinite(e?.price_per_kwh)
+        ? e.price_per_kwh.toFixed(2) + ' PLN/kWh'
+        : '— PLN/kWh';
+
+    text('e-inference-cost', hasMeasurements ? formatPln(lifetime.inference_cost_pln) : '—');
+    text('e-inference-energy', hasMeasurements ? formatEnergyKwh(lifetime.inference_energy_kwh) : '—');
+    text('e-tariff', tariff);
+    text('e-detail-tariff', tariff);
+
+    applyEnergyTotals('e-sess', e?.session, hasMeasurements);
+    applyEnergyTotals('e-today', e?.today, hasMeasurements);
+    applyEnergyTotals('e-7d', e?.last_7_days, hasMeasurements);
+    applyEnergyTotals('e-life-inf', lifetime, hasMeasurements);
+    text('e-life-total-cost', hasMeasurements ? formatPln(lifetime.cost_pln) : '—');
+    text('e-life-total-energy', hasMeasurements ? formatEnergyKwh(lifetime.energy_kwh) : '—');
+    text('e-first', e?.first_measurement_at || '—');
+    text('e-tz', e?.timezone_label || '—');
+
+    const warning = e?.save_warning || '';
+    text('e-warn', warning);
+    $('e-warn').hidden = !warning;
+}
+
 function applyUsage(u) {
     if (!u) {
         text('u-prompt', '—');
@@ -802,6 +884,37 @@ async function resetUsage() {
     showToast('Lifetime stats reset', 'success');
 }
 
+async function resetEnergy() {
+    const ok = await confirmAction(
+        'Reset lifetime energy',
+        'Reset lifetime GPU energy statistics? This permanently removes all stored GPU energy and cost history. Token statistics will not be affected. This action cannot be undone.',
+        'Reset',
+        true,
+        [
+            'Lifetime GPU energy',
+            'Lifetime inference energy',
+            'Lifetime GPU costs',
+            'Daily energy history',
+        ]
+    );
+    if (!ok) return;
+    try {
+        const resp = await fetch('/api/energy/reset-lifetime', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: true }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+            showToast('Energy reset failed: ' + (data.error || 'unknown error'), 'error');
+            return;
+        }
+        showToast('Lifetime energy reset', 'success');
+    } catch (err) {
+        showToast('Energy reset failed: ' + err.message, 'error');
+    }
+}
+
 function applyWsPayload(d) {
     serverRunning = d.server_running;
     serverStartedAt = d.server_started_at || null;
@@ -829,6 +942,7 @@ function applyWsPayload(d) {
     text('hero-reqs', l.requests_processing != null ? String(l.requests_processing) : '—');
 
     applyUsage(d.usage);
+    applyEnergy(d.energy);
     lastRunningModel = d.running_model || null;
     refreshModelCard();
 
@@ -1083,6 +1197,7 @@ $('btn-preset-copy').addEventListener('click', copyPreset);
 $('btn-preset-delete').addEventListener('click', deletePreset);
 $('btn-preset-reset').addEventListener('click', resetPresets);
 $('btn-usage-reset').addEventListener('click', resetUsage);
+$('btn-energy-reset').addEventListener('click', resetEnergy);
 $('btn-preset-close').addEventListener('click', closePresetModal);
 $('btn-preset-cancel').addEventListener('click', closePresetModal);
 $('preset-form').addEventListener('submit', savePreset);
