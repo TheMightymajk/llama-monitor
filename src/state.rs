@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::energy::EnergyState;
 use crate::gpu::GpuMetrics;
 use crate::gpu::env::GpuEnv;
 use crate::llama::metrics::LlamaMetrics;
@@ -75,6 +76,9 @@ pub fn save_ui_settings(path: &Path, settings: &UiSettings) -> anyhow::Result<()
 pub struct AppState {
     pub gpu_metrics: Arc<Mutex<BTreeMap<String, GpuMetrics>>>,
     pub llama_metrics: Arc<Mutex<LlamaMetrics>>,
+    pub llama_reachable: Arc<Mutex<bool>>,
+    pub energy: Arc<Mutex<EnergyState>>,
+    pub energy_path: PathBuf,
     pub running_model: Arc<Mutex<RunningModelInfo>>,
     pub log_buffer: Arc<Mutex<LogBuffer>>,
     pub log_source: Arc<Mutex<LogSourceInfo>>,
@@ -111,6 +115,8 @@ impl AppState {
         ui_settings_path: PathBuf,
         usage: UsageStats,
         usage_path: PathBuf,
+        energy: EnergyState,
+        energy_path: PathBuf,
         external_log_path: Option<PathBuf>,
         cli_external_log_path: Option<PathBuf>,
     ) -> Self {
@@ -138,6 +144,9 @@ impl AppState {
         Self {
             gpu_metrics: Arc::new(Mutex::new(BTreeMap::new())),
             llama_metrics: Arc::new(Mutex::new(LlamaMetrics::default())),
+            llama_reachable: Arc::new(Mutex::new(false)),
+            energy: Arc::new(Mutex::new(energy)),
+            energy_path,
             running_model: Arc::new(Mutex::new(RunningModelInfo::default())),
             log_buffer: Arc::new(Mutex::new(LogBuffer::new(MAX_LOG_LINES))),
             log_source: Arc::new(Mutex::new(log_source)),

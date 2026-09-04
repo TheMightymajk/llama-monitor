@@ -14,10 +14,13 @@ mod web;
 use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const GPU_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const ENERGY_SAVE_INTERVAL: Duration = Duration::from_secs(30);
+const SAVE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -93,6 +96,20 @@ async fn main() -> Result<()> {
         app_config.usage_stats_file.display()
     );
 
+    let (mut energy_state, energy_warning) =
+        energy::load_energy_state(&app_config.energy_stats_file);
+    energy_state.set_save_warning(energy_warning.clone());
+    if let Some(warning) = energy_warning {
+        eprintln!("[warn] {warning}");
+    }
+    let local_now = chrono::Local::now();
+    println!(
+        "[info] Energy history: {} (timezone {}, local date {})",
+        app_config.energy_stats_file.display(),
+        local_now.offset(),
+        local_now.date_naive()
+    );
+
     let state = state::AppState::new(
         initial_presets,
         app_config.presets_file.clone(),
@@ -103,6 +120,8 @@ async fn main() -> Result<()> {
         app_config.ui_settings_file.clone(),
         usage,
         app_config.usage_stats_file.clone(),
+        energy_state,
+        app_config.energy_stats_file.clone(),
         external_log_path,
         app_config.external_log_file.clone(),
     );
@@ -114,18 +133,73 @@ async fn main() -> Result<()> {
 
     // Detect and start GPU poller
     let backend = gpu::detect_backend(&app_config.gpu_backend);
+    let ingest_enabled = Arc::new(AtomicBool::new(true));
+    let energy_save_gate = Arc::new(tokio::sync::Mutex::new(()));
     {
         let gpu = state.gpu_metrics.clone();
+        let llama_metrics = state.llama_metrics.clone();
+        let llama_reachable = state.llama_reachable.clone();
+        let energy = state.energy.clone();
+        let ingest_enabled = ingest_enabled.clone();
         thread::spawn(move || {
+            // Runtime lock order: gpu_metrics -> llama_metrics/health -> energy.
             loop {
+                if !ingest_enabled.load(Ordering::SeqCst) {
+                    thread::sleep(GPU_POLL_INTERVAL);
+                    continue;
+                }
                 match backend.read_metrics() {
-                    Ok(m) => *gpu.lock().unwrap() = m,
+                    Ok(metrics) => {
+                        let samples: Vec<_> = metrics
+                            .iter()
+                            .map(|(id, metrics)| energy::GpuPowerSample {
+                                id: id.clone(),
+                                power_w: metrics.power_consumption,
+                                utilization: metrics.load as f32,
+                            })
+                            .collect();
+                        *gpu.lock().unwrap() = metrics;
+                        let busy = {
+                            let llama = llama_metrics.lock().unwrap();
+                            let health_ok = *llama_reachable.lock().unwrap();
+                            energy::BusyFlags {
+                                requests_processing: llama.requests_processing,
+                                slots_processing: llama.slots_processing,
+                                health_ok,
+                            }
+                        };
+                        energy.lock().unwrap().ingest(
+                            &samples,
+                            busy,
+                            Instant::now(),
+                            chrono::Local::now(),
+                        );
+                    }
                     Err(e) => eprintln!("[error] GPU metrics: {e}"),
                 }
                 thread::sleep(GPU_POLL_INTERVAL);
             }
         });
     }
+
+    let energy_save_task = {
+        let energy = state.energy.clone();
+        let path = state.energy_path.clone();
+        let save_gate = energy_save_gate.clone();
+        let ingest_enabled = ingest_enabled.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(ENERGY_SAVE_INTERVAL);
+            loop {
+                interval.tick().await;
+                if !ingest_enabled.load(Ordering::SeqCst) {
+                    break;
+                }
+                if let Err(error) = energy::save_with_gate(&energy, &path, &save_gate).await {
+                    eprintln!("[warn] Energy history save failed: {error}");
+                }
+            }
+        })
+    };
 
     // Llama metrics poller
     {
@@ -141,10 +215,70 @@ async fn main() -> Result<()> {
 
     let port = app_config.port;
     let host = config::parse_bind_ip(&app_config.host);
-    let routes = web::build_routes(state, app_config);
+    let routes = web::build_routes(state.clone(), app_config);
 
     println!("[info] Llama Monitor running on http://{host}:{port}");
-    warp::serve(routes).run((host, port)).await;
+    let shutdown_state = state.clone();
+    let shutdown_ingest_enabled = ingest_enabled.clone();
+    let shutdown_save_gate = energy_save_gate.clone();
+    let (_, server) = warp::serve(routes).bind_with_graceful_shutdown((host, port), async move {
+        wait_for_shutdown_signal().await;
+        println!("[info] Shutdown requested; saving energy history");
+
+        shutdown_ingest_enabled.store(false, Ordering::SeqCst);
+        shutdown_state
+            .energy
+            .lock()
+            .unwrap()
+            .set_ingest_enabled(false);
+        energy_save_task.abort();
+
+        let gate_available =
+            tokio::time::timeout(SAVE_SHUTDOWN_TIMEOUT, shutdown_save_gate.lock()).await;
+        match gate_available {
+            Ok(guard) => {
+                drop(guard);
+                if let Err(error) = energy::force_save(
+                    &shutdown_state.energy,
+                    &shutdown_state.energy_path,
+                    &shutdown_save_gate,
+                )
+                .await
+                {
+                    eprintln!("[error] Final energy history save failed: {error}");
+                }
+            }
+            Err(_) => {
+                eprintln!(
+                    "[error] Timed out waiting for an in-flight energy save; skipping final save"
+                );
+            }
+        }
+        println!("[info] Energy shutdown sequence complete");
+    });
+    server.await;
 
     Ok(())
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                if let Err(error) = result {
+                    eprintln!("[warn] SIGINT handler failed: {error}");
+                }
+            }
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        eprintln!("[warn] shutdown signal handler failed: {error}");
+    }
 }

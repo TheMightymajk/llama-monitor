@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const MAX_SAMPLE_GAP: Duration = Duration::from_secs(5);
@@ -34,6 +35,7 @@ pub struct EnergyTotals {
 pub struct EnergySnapshot {
     pub available: bool,
     pub telemetry_stale: bool,
+    pub save_warning: Option<String>,
     pub currency: String,
     pub price_per_kwh: f64,
     pub inference_util_threshold: f32,
@@ -46,6 +48,8 @@ pub struct EnergySnapshot {
 }
 
 pub struct EnergyState {
+    ingest_enabled: bool,
+    save_warning: Option<String>,
     price_per_kwh: f64,
     price_changed_at: DateTime<Local>,
     inference_util_threshold: f32,
@@ -202,9 +206,34 @@ pub fn save_energy_store(path: &Path, store: &EnergyStore) -> Result<(), String>
     result
 }
 
+pub type SaveGate = Arc<tokio::sync::Mutex<()>>;
+
+pub async fn save_with_gate(
+    energy: &Arc<Mutex<EnergyState>>,
+    path: &Path,
+    save_gate: &SaveGate,
+) -> Result<(), String> {
+    let _save_guard = save_gate.lock().await;
+    let store = energy.lock().unwrap().persistable_store();
+    let result = save_energy_store(path, &store);
+    let mut energy = energy.lock().unwrap();
+    energy.save_warning = result.as_ref().err().cloned();
+    result
+}
+
+pub async fn force_save(
+    energy: &Arc<Mutex<EnergyState>>,
+    path: &Path,
+    save_gate: &SaveGate,
+) -> Result<(), String> {
+    save_with_gate(energy, path, save_gate).await
+}
+
 impl EnergyState {
     pub fn new_default() -> Self {
         Self {
+            ingest_enabled: true,
+            save_warning: None,
             price_per_kwh: 1.0,
             price_changed_at: Local::now(),
             inference_util_threshold: 20.0,
@@ -287,6 +316,8 @@ impl EnergyState {
             })
             .collect();
         Self {
+            ingest_enabled: true,
+            save_warning: None,
             price_per_kwh: store.price_per_kwh,
             price_changed_at: store.price_changed_at,
             inference_util_threshold: store.inference_util_threshold,
@@ -312,6 +343,10 @@ impl EnergyState {
         now_instant: Instant,
         now_local: DateTime<Local>,
     ) {
+        if !self.ingest_enabled {
+            return;
+        }
+
         let reported_ids: HashSet<&str> = gpus.iter().map(|gpu| gpu.id.as_str()).collect();
         self.bases
             .retain(|id, _| reported_ids.contains(id.as_str()));
@@ -409,6 +444,7 @@ impl EnergyState {
         EnergySnapshot {
             available,
             telemetry_stale: !available,
+            save_warning: self.save_warning.clone(),
             currency: "PLN".to_string(),
             price_per_kwh: self.price_per_kwh,
             inference_util_threshold: self.inference_util_threshold,
@@ -429,6 +465,14 @@ impl EnergyState {
         self.last_valid_power_instant = None;
         self.first_measurement_at = None;
         self.last_measurement_at = None;
+    }
+
+    pub fn set_ingest_enabled(&mut self, enabled: bool) {
+        self.ingest_enabled = enabled;
+    }
+
+    pub fn set_save_warning(&mut self, warning: Option<String>) {
+        self.save_warning = warning;
     }
 
     fn add_delta(totals: &mut EnergyTotals, delta_kwh: f64, delta_cost: f64, is_inference: bool) {
@@ -863,6 +907,60 @@ mod tests {
 
         assert!(error.contains("temporary file"));
         assert_eq!(std::fs::read(&path).unwrap(), original);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn disabled_ingest_does_not_accept_samples() {
+        let mut energy = EnergyState::new_default();
+        let now = Instant::now();
+        let local = Local::now();
+
+        energy.set_ingest_enabled(false);
+        energy.ingest(&[sample("0", 100.0, 50.0)], idle_busy(), now, local);
+
+        let snapshot = energy.snapshot(now, local);
+        assert!(!snapshot.available);
+        assert!(snapshot.first_measurement_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn two_sequential_force_saves_leave_valid_json() {
+        let dir = tempfile_dir();
+        let path = dir.join("energy.json");
+        let energy = std::sync::Arc::new(std::sync::Mutex::new(EnergyState::new_default()));
+        let save_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+
+        force_save(&energy, &path, &save_gate).await.unwrap();
+        force_save(&energy, &path, &save_gate).await.unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        serde_json::from_slice::<EnergyStore>(&bytes).unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn persistable_store_is_independent_of_later_ingest() {
+        let dir = tempfile_dir();
+        let path = dir.join("energy.json");
+        let mut energy = EnergyState::new_default();
+        let now = Instant::now();
+        let local = Local::now();
+        let store = energy.persistable_store();
+
+        energy.ingest(&[sample("0", 100.0, 0.0)], idle_busy(), now, local);
+        energy.ingest(
+            &[sample("0", 100.0, 0.0)],
+            idle_busy(),
+            now + Duration::from_millis(500),
+            local,
+        );
+        save_energy_store(&path, &store).unwrap();
+
+        let (loaded, warning) = load_energy_state(&path);
+        assert!(warning.is_none());
+        assert_eq!(loaded.snapshot(now, local).lifetime.energy_kwh, 0.0);
+        assert!(energy.snapshot(now, local).lifetime.energy_kwh > 0.0);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

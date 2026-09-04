@@ -52,6 +52,7 @@ pub async fn llama_metrics_poller(state: AppState) {
         } else {
             false
         };
+        *state.llama_reachable.lock().unwrap() = server_reachable;
 
         if health_stick.on_health_result(server_reachable) {
             {
