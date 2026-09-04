@@ -24,6 +24,7 @@ Web dashboard for managing [llama.cpp](https://github.com/ggerganov/llama.cpp) s
 - **Real-time GPU Monitoring** -- Temperature, load, VRAM, power, clock speeds (AMD ROCm + NVIDIA)
 - **Inference Metrics** -- Prompt/generation speed, KV cache usage, slot status via Prometheus endpoint
 - **Lifetime Usage & Savings** -- Persistent prompt/generation/cache-hit totals with estimated $ saved vs GPT-5.6 Luna and Qwen3.8-27B API
+- **GPU Energy Cost** -- Persistent GPU power integration (PLN) with inference vs total breakdown; default tariff 1 PLN/kWh
 - **Customizable Presets** -- Create, edit, copy, delete model presets with all llama.cpp parameters; persisted to disk
 - **File Browser** -- Browse the filesystem to select llama-server binary and .gguf model files
 - **Integrated Chat** -- Streaming chat UI with reasoning/thinking block support, proxied to the configured port
@@ -143,10 +144,21 @@ The preset editor groups parameters into collapsible sections:
 
 Prompt processed, generation, and KV prefix-cache hit totals are accumulated across llama-server and monitor restarts into `~/.config/llama-monitor/usage-stats.json`. The Dashboard Lifetime panel estimates dollars saved versus GPT-5.6 Luna and official Qwen3.8-27B Alibaba API rates (GPU electricity is not subtracted). Use **Reset** to clear counters.
 
+### GPU energy cost
+
+GPU power readings from `rocm-smi` / `nvidia-smi` are integrated into kWh using a trapezoid rule (per GPU, max 5 s sample gap). Totals and daily history persist to `~/.local/state/llama-monitor/energy.json` (atomic write; corrupt files are backed up and reset). Default tariff is **1 PLN/kWh**; currency is PLN.
+
+Two energy buckets are tracked:
+
+- **Inference** — power while llama-server has active requests or slots, or (when healthy) any GPU utilization is at/above the inference threshold (default 20%, configurable in **Configuration → Energy Tracking**).
+- **Total GPU energy** — all measured GPU power, including idle and non-inference workloads.
+
+Changing the tariff updates future cost only; stored kWh and historical PLN amounts are not repriced. Session, today, last 7 days, and lifetime totals are pushed on the WebSocket as `energy`. Use **Reset lifetime energy** in the GPU Energy Cost card to clear energy history (token usage is unaffected).
+
 ## Web UI
 
 ### Server Tab
-Control bar with preset selector and port. Start/stop the server. Live inference metrics (prompt/generation speed, context usage, slot status), lifetime token/savings panel, and GPU monitoring table (temperature, load, VRAM, power, clocks).
+Control bar with preset selector and port. Start/stop the server. Live inference metrics (prompt/generation speed, context usage, slot status), lifetime token/savings panel, GPU energy cost card (inference + total PLN/kWh), and GPU monitoring table (temperature, load, VRAM, power, clocks).
 
 ### Chat Tab
 Streaming chat interface that proxies to the running llama-server's `/v1/chat/completions` endpoint on the configured port. Supports reasoning/thinking blocks and Markdown rendering.
@@ -166,6 +178,8 @@ src/
     mod.rs             -- LogBuffer, external file follow (tail -F), source metadata
   usage/
     mod.rs             -- Lifetime token counters, cache hits, $ savings, usage-stats.json
+  energy/
+    mod.rs             -- GPU power integration, inference classification, energy.json persistence
   gpu/
     mod.rs             -- GpuMetrics, GpuBackend trait, auto-detection
     rocm.rs            -- AMD ROCm via rocm-smi JSON
@@ -221,6 +235,8 @@ llama-server /metrics       -->  Llama Poller (1s)   --> AppState
 | GET | `/api/settings` | Get persisted UI settings |
 | PUT | `/api/settings` | Save UI settings |
 | POST | `/api/usage/reset` | Reset lifetime token / savings counters |
+| PUT | `/api/energy/settings` | Set energy tariff (`price_per_kwh`, `inference_util_threshold` 0–100) |
+| POST | `/api/energy/reset-lifetime` | Reset GPU energy history (`{"confirm": true}` required) |
 | POST | `/api/logs/clear` | Clear in-memory Logs view (does not delete files) |
 | GET | `/api/browse?path=&filter=` | Browse filesystem (filter: `gguf`, `executable`) |
 | GET | `/api/gpu-env` | Get GPU environment config |

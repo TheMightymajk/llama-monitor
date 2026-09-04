@@ -35,6 +35,7 @@ src/
                        poller.rs (async /health, /metrics, /slots polling)
   presets/             ModelPreset CRUD, persisted to ~/.config/llama-monitor/presets.json
   usage/               Lifetime token counters + $ savings, persisted to usage-stats.json
+  energy/              GPU power trapezoid integration, inference vs total, energy.json
   logs/                LogBuffer + external file follow (tail -F); ManagedProcess | ExternalFile | None
   models/              GGUF discovery in a configured directory
   web/                 warp routes: api.rs (REST + file browser + chat proxy),
@@ -60,6 +61,10 @@ Data flow: GPU poller (500 ms, OS thread) and llama poller (1 s, tokio task) wri
 - **Config precedence:** CLI flags < persisted UI settings (`~/.config/llama-monitor/`) —
   `ui-settings.json`, `gpu-env.json`, `presets.json`, `usage-stats.json`. Writes are atomic (tmp file + rename);
   keep it that way.
+- **GPU energy:** Persisted to `~/.local/state/llama-monitor/energy.json` (not under config dir).
+  Default tariff 1 PLN/kWh; inference = active llama requests/slots or any GPU util ≥ threshold (default 20%).
+  Total energy includes idle/non-inference draw. Tariff changes do not reprice stored history. APIs:
+  `PUT /api/energy/settings`, `POST /api/energy/reset-lifetime` (`confirm: true`); snapshot on WebSocket as `energy`.
 - **Cross-platform target: Linux + macOS** (x86_64 and aarch64, see release workflow).
   Avoid Linux-only syscalls; `which` is used for command detection.
 - **External binaries are optional.** The app must start and run fine when `llama-server`,
