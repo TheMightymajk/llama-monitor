@@ -11,9 +11,17 @@ pub struct LlamaMetrics {
     pub predicted_tokens_total: u64,
     pub kv_cache_tokens: Option<u64>,
     pub kv_cache_max: Option<u64>,
+    /// Session high-water mark from `llamacpp:n_tokens_max` — not current KV used.
+    pub n_tokens_max: Option<u64>,
     pub slots_idle: Option<u32>,
     pub slots_processing: Option<u32>,
     pub requests_processing: Option<u32>,
+    pub spec_draft_tokens: Option<u64>,
+    pub spec_accepted_tokens: Option<u64>,
+    pub spec_drafts: Option<u64>,
+    /// `accepted / draft`; `None` when spec metrics absent or draft_tokens == 0.
+    pub spec_acceptance_ratio: Option<f64>,
+    pub n_busy_slots_per_decode: Option<f64>,
     pub status: String,
 }
 
@@ -23,9 +31,16 @@ impl LlamaMetrics {
     pub fn apply_metrics(&mut self, prom: &PrometheusValues) {
         self.prompt_tokens_per_sec = Some(prom.prompt_tokens_per_sec);
         self.generation_tokens_per_sec = Some(prom.predicted_tokens_per_sec);
-        self.prompt_tokens_total = prom.prompt_tokens_total as u64;
-        self.predicted_tokens_total = prom.predicted_tokens_total as u64;
+        self.prompt_tokens_total = prometheus_f64_to_u64(prom.prompt_tokens_total).unwrap_or(0);
+        self.predicted_tokens_total =
+            prometheus_f64_to_u64(prom.predicted_tokens_total).unwrap_or(0);
         self.requests_processing = Some(prom.requests_processing);
+        self.n_tokens_max = prom.n_tokens_max;
+        self.spec_draft_tokens = prom.spec_decode_num_draft_tokens_total;
+        self.spec_accepted_tokens = prom.spec_decode_num_accepted_tokens_total;
+        self.spec_drafts = prom.spec_decode_num_drafts_total;
+        self.spec_acceptance_ratio = prom.speculative_acceptance_ratio();
+        self.n_busy_slots_per_decode = prom.n_busy_slots_per_decode;
     }
 
     /// `/metrics` failed this cycle: live gauges become unavailable.
@@ -84,6 +99,39 @@ pub struct PrometheusValues {
     pub predicted_tokens_total: f64,
     pub predicted_seconds_total: f64,
     pub requests_processing: u32,
+    /// Present only when llama.cpp exports `llamacpp:prompt_tokens_cached_total`.
+    pub prompt_tokens_cached_total: Option<u64>,
+    pub n_tokens_max: Option<u64>,
+    pub spec_decode_num_draft_tokens_total: Option<u64>,
+    pub spec_decode_num_accepted_tokens_total: Option<u64>,
+    pub spec_decode_num_drafts_total: Option<u64>,
+    pub n_busy_slots_per_decode: Option<f64>,
+}
+
+impl PrometheusValues {
+    /// Speculative/MTP acceptance: accepted draft tokens / drafted tokens.
+    /// `None` when either counter is missing or there were no draft tokens.
+    pub fn speculative_acceptance_ratio(&self) -> Option<f64> {
+        let draft = self.spec_decode_num_draft_tokens_total?;
+        let accepted = self.spec_decode_num_accepted_tokens_total?;
+        if draft == 0 {
+            return None;
+        }
+        Some(accepted as f64 / draft as f64)
+    }
+}
+
+/// Convert a Prometheus number to a counter. Accepts scientific notation via f64.
+/// Rejects NaN, infinities, negatives, and values that overflow u64.
+pub fn prometheus_f64_to_u64(value: f64) -> Option<u64> {
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    let rounded = value.round();
+    if rounded > u64::MAX as f64 {
+        return None;
+    }
+    Some(rounded as u64)
 }
 
 /// Parse Prometheus text format and extract the metrics we care about.
@@ -111,6 +159,24 @@ pub fn parse_prometheus_metrics(body: &str) -> PrometheusValues {
             "llamacpp:tokens_predicted_total" => vals.predicted_tokens_total = value,
             "llamacpp:tokens_predicted_seconds_total" => vals.predicted_seconds_total = value,
             "llamacpp:requests_processing" => vals.requests_processing = value as u32,
+            "llamacpp:prompt_tokens_cached_total" => {
+                vals.prompt_tokens_cached_total = prometheus_f64_to_u64(value);
+            }
+            "llamacpp:n_tokens_max" => vals.n_tokens_max = prometheus_f64_to_u64(value),
+            "llamacpp:spec_decode_num_draft_tokens_total" => {
+                vals.spec_decode_num_draft_tokens_total = prometheus_f64_to_u64(value);
+            }
+            "llamacpp:spec_decode_num_accepted_tokens_total" => {
+                vals.spec_decode_num_accepted_tokens_total = prometheus_f64_to_u64(value);
+            }
+            "llamacpp:spec_decode_num_drafts_total" => {
+                vals.spec_decode_num_drafts_total = prometheus_f64_to_u64(value);
+            }
+            "llamacpp:n_busy_slots_per_decode" => {
+                if value.is_finite() {
+                    vals.n_busy_slots_per_decode = Some(value);
+                }
+            }
             _ => {}
         }
     }
@@ -294,6 +360,7 @@ mod tests {
             predicted_tokens_total: 5_000.0,
             predicted_seconds_total: 88.2,
             requests_processing: 1,
+            ..Default::default()
         }
     }
 
@@ -385,5 +452,125 @@ mod tests {
         assert_eq!(m.kv_cache_max, Some(8192));
         assert_eq!(m.slots_idle, Some(1));
         assert_eq!(m.slots_processing, Some(0));
+    }
+
+    fn live_server_prom() -> PrometheusValues {
+        parse_prometheus_metrics(include_str!(
+            "../../tests/fixtures/prometheus_metrics_live_server.txt"
+        ))
+    }
+
+    #[test]
+    fn live_server_scientific_notation_cached_tokens() {
+        assert_eq!(
+            live_server_prom().prompt_tokens_cached_total,
+            Some(4_657_250)
+        );
+    }
+
+    #[test]
+    fn live_server_processed_and_predicted_totals() {
+        let vals = live_server_prom();
+        assert!((vals.prompt_tokens_total - 251_342.0).abs() < 0.1);
+        assert!((vals.predicted_tokens_total - 71_788.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn live_server_idle_gauges_are_zero_not_lifetime_average() {
+        let vals = live_server_prom();
+        assert_eq!(vals.prompt_tokens_per_sec, 0.0);
+        assert_eq!(vals.predicted_tokens_per_sec, 0.0);
+        assert_eq!(vals.requests_processing, 0);
+        let lifetime_prompt = 251_342.0 / 579.864;
+        let lifetime_gen = 71_788.0 / 2719.99;
+        assert!((vals.prompt_tokens_per_sec - lifetime_prompt).abs() > 1.0);
+        assert!((vals.predicted_tokens_per_sec - lifetime_gen).abs() > 1.0);
+    }
+
+    #[test]
+    fn live_server_n_tokens_max_is_peak_not_kv_used() {
+        let vals = live_server_prom();
+        assert_eq!(vals.n_tokens_max, Some(113_868));
+        let mut m = LlamaMetrics::default();
+        m.apply_metrics(&vals);
+        m.apply_slots(&[serde_json::json!({
+            "id": 0,
+            "n_ctx": 180224,
+            "n_prompt_tokens": 120,
+            "is_processing": false
+        })]);
+        assert_eq!(m.n_tokens_max, Some(113_868));
+        assert_eq!(m.kv_cache_tokens, Some(120));
+        assert_eq!(m.kv_cache_max, Some(180_224));
+        assert_ne!(m.kv_cache_tokens, m.n_tokens_max);
+    }
+
+    #[test]
+    fn live_server_speculative_acceptance_ratio() {
+        let vals = live_server_prom();
+        assert_eq!(vals.spec_decode_num_draft_tokens_total, Some(40_018));
+        assert_eq!(vals.spec_decode_num_accepted_tokens_total, Some(31_710));
+        assert_eq!(vals.spec_decode_num_drafts_total, Some(40_018));
+        let ratio = vals.speculative_acceptance_ratio().unwrap();
+        assert!((ratio - 31_710.0 / 40_018.0).abs() < 1e-12);
+        assert!((ratio - 0.7924).abs() < 0.0001);
+    }
+
+    #[test]
+    fn speculative_acceptance_ratio_none_when_no_drafts() {
+        let vals = PrometheusValues {
+            spec_decode_num_draft_tokens_total: Some(0),
+            spec_decode_num_accepted_tokens_total: Some(0),
+            ..Default::default()
+        };
+        assert!(vals.speculative_acceptance_ratio().is_none());
+    }
+
+    #[test]
+    fn speculative_acceptance_ratio_none_when_metric_absent() {
+        assert!(
+            PrometheusValues::default()
+                .speculative_acceptance_ratio()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cached_counter_absent_on_legacy_metrics() {
+        let body = include_str!("../../tests/fixtures/prometheus_metrics.txt");
+        let vals = parse_prometheus_metrics(body);
+        assert_eq!(vals.prompt_tokens_cached_total, None);
+        assert_eq!(vals.spec_decode_num_draft_tokens_total, None);
+    }
+
+    #[test]
+    fn prometheus_f64_to_u64_rejects_invalid() {
+        assert_eq!(prometheus_f64_to_u64(4.65725e+06), Some(4_657_250));
+        assert_eq!(prometheus_f64_to_u64(0.0), Some(0));
+        assert_eq!(prometheus_f64_to_u64(-1.0), None);
+        assert_eq!(prometheus_f64_to_u64(f64::NAN), None);
+        assert_eq!(prometheus_f64_to_u64(f64::INFINITY), None);
+        assert_eq!(prometheus_f64_to_u64(f64::NEG_INFINITY), None);
+    }
+
+    #[test]
+    fn live_server_busy_slots_per_decode_is_diagnostic() {
+        let vals = live_server_prom();
+        assert!((vals.n_busy_slots_per_decode.unwrap() - 1.05701).abs() < 1e-5);
+    }
+
+    #[test]
+    fn apply_metrics_copies_peak_and_spec_to_snapshot() {
+        let mut m = LlamaMetrics::default();
+        m.apply_metrics(&live_server_prom());
+        assert_eq!(m.n_tokens_max, Some(113_868));
+        assert_eq!(m.spec_draft_tokens, Some(40_018));
+        assert_eq!(m.spec_accepted_tokens, Some(31_710));
+        assert_eq!(m.spec_drafts, Some(40_018));
+        let ratio = m.spec_acceptance_ratio.unwrap();
+        assert!((ratio - 31_710.0 / 40_018.0).abs() < 1e-12);
+        assert!((m.n_busy_slots_per_decode.unwrap() - 1.05701).abs() < 1e-5);
+        assert_eq!(m.prompt_tokens_per_sec, Some(0.0));
+        assert_eq!(m.generation_tokens_per_sec, Some(0.0));
     }
 }
