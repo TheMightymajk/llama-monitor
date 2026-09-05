@@ -131,6 +131,7 @@ mod tests {
         assert!(payload["llama"]["prompt_tokens_per_sec"].is_null());
         assert!(payload["llama"]["kv_cache_tokens"].is_null());
         assert!(payload["llama"]["generation_tokens_per_sec"].is_null());
+        assert!(payload["llama"]["inference_phase"].is_null());
     }
 
     #[test]
@@ -154,7 +155,14 @@ mod tests {
     #[test]
     fn ws_payload_exposes_lifetime_and_mtp_diagnostics() {
         let mut usage = crate::usage::UsageStats::default();
-        usage.apply_prometheus(251_342, 71_788, Some(4_657_250));
+        usage.apply_sample(&crate::usage::PrometheusUsageSample {
+            prompt: 251_342,
+            predicted: 71_788,
+            cached: Some(4_657_250),
+            peak_context: Some(113_868),
+            mtp_draft: Some(40_018),
+            mtp_accepted: Some(31_710),
+        });
         let snap = usage.snapshot();
         let mut llama = LlamaMetrics::default();
         llama.apply_metrics(&crate::llama::metrics::parse_prometheus_metrics(
@@ -177,11 +185,95 @@ mod tests {
         assert_eq!(payload["usage"]["total_prompt_tokens"], 4_908_592);
         assert_eq!(payload["usage"]["predicted_tokens"], 71_788);
         assert!(payload["usage"]["cache_reuse_ratio"].as_f64().unwrap() > 0.94);
+        assert_eq!(payload["usage"]["peak_context_tokens"], 113_868);
+        assert_eq!(payload["usage"]["mtp_draft_tokens"], 40_018);
+        assert_eq!(payload["usage"]["mtp_accepted_tokens"], 31_710);
+        assert!(payload["usage"]["mtp_acceptance_ratio"].as_f64().unwrap() > 0.79);
         assert_eq!(payload["llama"]["n_tokens_max"], 113_868);
         assert_eq!(payload["llama"]["spec_accepted_tokens"], 31_710);
         assert_eq!(payload["llama"]["spec_draft_tokens"], 40_018);
         assert!(payload["llama"]["spec_acceptance_ratio"].as_f64().unwrap() > 0.79);
         assert_eq!(payload["llama"]["prompt_tokens_per_sec"], 0.0);
+        assert_eq!(payload["llama"]["inference_phase"], "idle");
         assert!(payload["llama"]["kv_cache_tokens"].is_null());
+    }
+
+    #[test]
+    fn ws_payload_preserves_token_counters_above_u32() {
+        let mut usage = crate::usage::UsageStats::default();
+        usage.apply_sample(&crate::usage::PrometheusUsageSample {
+            prompt: 5_000_000_000,
+            predicted: 3_000_000_000,
+            cached: Some(12_000_000_000),
+            peak_context: Some(4_294_967_296),
+            mtp_draft: Some(4_294_967_296),
+            mtp_accepted: Some(5_000_000_000),
+        });
+        let snap = usage.snapshot();
+        let mut llama = LlamaMetrics::default();
+        llama.apply_metrics(&crate::llama::metrics::parse_prometheus_metrics(
+            "\
+llamacpp:prompt_tokens_total 5000000000
+llamacpp:tokens_predicted_total 3000000000
+llamacpp:spec_decode_num_draft_tokens_total 4294967296
+llamacpp:spec_decode_num_accepted_tokens_total 5000000000
+llamacpp:spec_decode_num_drafts_total 4294967296
+",
+        ));
+
+        let payload = build_ws_payload(
+            &None,
+            &llama,
+            &[],
+            &LogSourceInfo::default(),
+            true,
+            Some(1),
+            &snap,
+            &empty_running_model(),
+            &empty_energy(),
+        );
+        assert_eq!(
+            payload["usage"]["prompt_tokens"].as_u64(),
+            Some(5_000_000_000)
+        );
+        assert_eq!(
+            payload["usage"]["cached_tokens"].as_u64(),
+            Some(12_000_000_000)
+        );
+        assert_eq!(
+            payload["usage"]["total_prompt_tokens"].as_u64(),
+            Some(17_000_000_000)
+        );
+        assert_eq!(
+            payload["usage"]["predicted_tokens"].as_u64(),
+            Some(3_000_000_000)
+        );
+        assert_eq!(
+            payload["usage"]["peak_context_tokens"].as_u64(),
+            Some(4_294_967_296)
+        );
+        assert_eq!(
+            payload["usage"]["mtp_draft_tokens"].as_u64(),
+            Some(4_294_967_296)
+        );
+        assert_eq!(
+            payload["usage"]["mtp_accepted_tokens"].as_u64(),
+            Some(5_000_000_000)
+        );
+        assert_eq!(
+            payload["llama"]["prompt_tokens_total"].as_u64(),
+            Some(5_000_000_000)
+        );
+        assert_eq!(
+            payload["llama"]["spec_draft_tokens"].as_u64(),
+            Some(4_294_967_296)
+        );
+        assert_eq!(
+            payload["llama"]["spec_accepted_tokens"].as_u64(),
+            Some(5_000_000_000)
+        );
+        assert_ne!(payload["usage"]["prompt_tokens"].as_u64(), Some(0));
+        assert!(payload["usage"]["prompt_tokens"].as_i64().unwrap() > 0);
+        assert!(payload["usage"]["total_prompt_tokens"].as_u64().unwrap() > u32::MAX as u64);
     }
 }

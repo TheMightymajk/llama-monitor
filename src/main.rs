@@ -90,10 +90,13 @@ async fn main() -> Result<()> {
     // Load lifetime usage counters
     let usage = usage::load_usage_stats(&app_config.usage_stats_file);
     println!(
-        "[info] Usage stats: {} prompt / {} predicted / {} cached tokens from {}",
+        "[info] Usage stats: {} prompt / {} predicted / {} cached / peak {} / MTP {}/{} from {}",
         usage.prompt_tokens,
         usage.predicted_tokens,
         usage.cached_tokens,
+        usage.peak_context_tokens,
+        usage.mtp_accepted_tokens,
+        usage.mtp_draft_tokens,
         app_config.usage_stats_file.display()
     );
 

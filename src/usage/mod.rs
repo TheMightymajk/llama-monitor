@@ -37,15 +37,41 @@ impl ProviderRates {
 const CACHE_DEDUP_WINDOW: Duration = Duration::from_secs(2);
 const SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 
+/// One `/metrics` scrape folded into lifetime totals.
+///
+/// `prompt` / `predicted` are always present (0 when the names are missing).
+/// Optional fields stay `None` when that llama.cpp build does not export them.
+#[derive(Debug, Clone, Default)]
+pub struct PrometheusUsageSample {
+    pub prompt: u64,
+    pub predicted: u64,
+    pub cached: Option<u64>,
+    pub peak_context: Option<u64>,
+    pub mtp_draft: Option<u64>,
+    pub mtp_accepted: Option<u64>,
+}
+
 /// Persisted lifetime counters + Prometheus baselines.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct UsageStats {
+    /// Lifetime prompt tokens processed (not cache hits). u64 — do not narrow.
     #[serde(default)]
     pub prompt_tokens: u64,
+    /// Lifetime generated tokens. u64 — do not narrow.
     #[serde(default)]
     pub predicted_tokens: u64,
+    /// Lifetime prompt tokens reused from cache. u64 — do not narrow.
     #[serde(default)]
     pub cached_tokens: u64,
+    /// Lifetime high-water mark of `llamacpp:n_tokens_max`. Not a counter.
+    #[serde(default)]
+    pub peak_context_tokens: u64,
+    /// Lifetime speculative/MTP draft tokens. u64 — do not narrow.
+    #[serde(default)]
+    pub mtp_draft_tokens: u64,
+    /// Lifetime speculative/MTP accepted tokens. u64 — do not narrow.
+    #[serde(default)]
+    pub mtp_accepted_tokens: u64,
     /// Last seen llama-server Prometheus prompt counter (session baseline).
     #[serde(default)]
     pub last_prompt: u64,
@@ -55,6 +81,12 @@ pub struct UsageStats {
     /// Last seen `llamacpp:prompt_tokens_cached_total` (session baseline).
     #[serde(default)]
     pub last_cached: u64,
+    /// Last seen `llamacpp:spec_decode_num_draft_tokens_total`.
+    #[serde(default)]
+    pub last_mtp_draft: u64,
+    /// Last seen `llamacpp:spec_decode_num_accepted_tokens_total`.
+    #[serde(default)]
+    pub last_mtp_accepted: u64,
     /// True once this llama-server session exported `prompt_tokens_cached_total`.
     /// Persisted so monitor restart does not fall back to `parse_cache_n` and
     /// double-count before the first scrape.
@@ -80,6 +112,10 @@ pub struct UsageSnapshot {
     pub total_prompt_tokens: u64,
     pub cache_hit_ratio: f64,
     pub cache_reuse_ratio: f64,
+    pub peak_context_tokens: u64,
+    pub mtp_draft_tokens: u64,
+    pub mtp_accepted_tokens: u64,
+    pub mtp_acceptance_ratio: Option<f64>,
     pub saved_luna_usd: f64,
     pub saved_qwen_usd: f64,
     pub rates: UsageRatesInfo,
@@ -111,6 +147,10 @@ impl UsageStats {
             total_prompt_tokens,
             cache_hit_ratio: cache_reuse_ratio,
             cache_reuse_ratio,
+            peak_context_tokens: self.peak_context_tokens,
+            mtp_draft_tokens: self.mtp_draft_tokens,
+            mtp_accepted_tokens: self.mtp_accepted_tokens,
+            mtp_acceptance_ratio: self.mtp_acceptance_ratio(),
             saved_luna_usd: estimated_api_cost(
                 self.prompt_tokens,
                 self.cached_tokens,
@@ -135,6 +175,15 @@ impl UsageStats {
         }
     }
 
+    /// Speculative/MTP acceptance from lifetime counters.
+    /// `None` when there were no draft tokens.
+    pub fn mtp_acceptance_ratio(&self) -> Option<f64> {
+        if self.mtp_draft_tokens == 0 {
+            return None;
+        }
+        Some(self.mtp_accepted_tokens as f64 / self.mtp_draft_tokens as f64)
+    }
+
     /// Fold a Prometheus sample into lifetime totals.
     ///
     /// If `current >= last` → add delta. If `current < last` (llama-server
@@ -142,22 +191,30 @@ impl UsageStats {
     ///
     /// `cached` is `Some` when `llamacpp:prompt_tokens_cached_total` was present.
     /// Once seen, it is the sole source of `cached_tokens` for this session.
+    #[cfg(test)]
     pub fn apply_prometheus(&mut self, prompt: u64, predicted: u64, cached: Option<u64>) {
+        self.apply_sample(&PrometheusUsageSample {
+            prompt,
+            predicted,
+            cached,
+            ..Default::default()
+        });
+    }
+
+    /// Same delta/reset semantics as [`Self::apply_prometheus`], plus peak
+    /// context (high-water) and MTP draft/accepted counters.
+    pub fn apply_sample(&mut self, sample: &PrometheusUsageSample) {
+        let prompt = sample.prompt;
+        let predicted = sample.predicted;
+        let cached = sample.cached;
+
         let prompt_restart = prompt < self.last_prompt;
         let predicted_restart = predicted < self.last_predicted;
         let cached_restart = cached.is_some_and(|c| c < self.last_cached);
         let server_restart = prompt_restart || predicted_restart || cached_restart;
 
-        let prompt_delta = if prompt >= self.last_prompt {
-            prompt - self.last_prompt
-        } else {
-            prompt
-        };
-        let predicted_delta = if predicted >= self.last_predicted {
-            predicted - self.last_predicted
-        } else {
-            predicted
-        };
+        let prompt_delta = counter_delta(prompt, self.last_prompt);
+        let predicted_delta = counter_delta(predicted, self.last_predicted);
 
         let mut changed = prompt_delta != 0 || predicted_delta != 0;
 
@@ -172,11 +229,7 @@ impl UsageStats {
 
         if let Some(current) = cached {
             self.native_cached_counter = true;
-            let cached_delta = if current >= self.last_cached {
-                current - self.last_cached
-            } else {
-                current
-            };
+            let cached_delta = counter_delta(current, self.last_cached);
             if cached_delta != 0 {
                 self.cached_tokens = self.cached_tokens.saturating_add(cached_delta);
                 changed = true;
@@ -184,6 +237,31 @@ impl UsageStats {
             self.last_cached = current;
         } else if server_restart {
             self.native_cached_counter = false;
+        }
+
+        if let Some(peak) = sample.peak_context
+            && peak > self.peak_context_tokens
+        {
+            self.peak_context_tokens = peak;
+            changed = true;
+        }
+
+        if let Some(current) = sample.mtp_draft {
+            let draft_delta = counter_delta(current, self.last_mtp_draft);
+            if draft_delta != 0 {
+                self.mtp_draft_tokens = self.mtp_draft_tokens.saturating_add(draft_delta);
+                changed = true;
+            }
+            self.last_mtp_draft = current;
+        }
+
+        if let Some(current) = sample.mtp_accepted {
+            let accepted_delta = counter_delta(current, self.last_mtp_accepted);
+            if accepted_delta != 0 {
+                self.mtp_accepted_tokens = self.mtp_accepted_tokens.saturating_add(accepted_delta);
+                changed = true;
+            }
+            self.last_mtp_accepted = current;
         }
 
         if changed {
@@ -215,8 +293,11 @@ impl UsageStats {
         self.prompt_tokens = 0;
         self.predicted_tokens = 0;
         self.cached_tokens = 0;
-        // Keep last_* (including last_cached) so the next Prometheus sample
-        // does not re-add the current llama-server session totals.
+        self.peak_context_tokens = 0;
+        self.mtp_draft_tokens = 0;
+        self.mtp_accepted_tokens = 0;
+        // Keep last_* (including last_cached / last_mtp_*) so the next
+        // Prometheus sample does not re-add the current llama-server session totals.
         self.last_cache_n = None;
         self.touch();
     }
@@ -246,11 +327,20 @@ impl UsageStats {
     }
 }
 
+/// Process-counter delta: add the increase, or the fresh session total after a reset.
+fn counter_delta(current: u64, previous: u64) -> u64 {
+    if current >= previous {
+        current - previous
+    } else {
+        current
+    }
+}
+
 pub fn estimated_api_cost(prompt: u64, cached: u64, predicted: u64, rates: &ProviderRates) -> f64 {
     let cached_rate = rates.effective_cached_input_per_m();
-    (prompt as f64) * rates.input_per_m / 1_000_000.0
-        + (cached as f64) * cached_rate / 1_000_000.0
-        + (predicted as f64) * rates.output_per_m / 1_000_000.0
+    prompt as f64 / 1_000_000.0 * rates.input_per_m
+        + cached as f64 / 1_000_000.0 * cached_rate
+        + predicted as f64 / 1_000_000.0 * rates.output_per_m
 }
 
 fn now_secs() -> u64 {
@@ -676,5 +766,425 @@ mod tests {
             + 4_657_250.0 / 1_000_000.0 * 0.20
             + 71_788.0 / 1_000_000.0 * 1.20;
         assert!(snap.saved_luna_usd < billed_cached_as_input - 0.5);
+    }
+
+    #[test]
+    fn large_token_counters_total_prompt_and_cost_are_u64() {
+        let mut s = UsageStats::default();
+        s.apply_prometheus(5_000_000_000, 3_000_000_000, Some(12_000_000_000));
+        assert_eq!(s.prompt_tokens, 5_000_000_000);
+        assert_eq!(s.cached_tokens, 12_000_000_000);
+        assert_eq!(s.predicted_tokens, 3_000_000_000);
+        let snap = s.snapshot();
+        assert_eq!(snap.total_prompt_tokens, 17_000_000_000);
+        assert_eq!(snap.prompt_tokens, 5_000_000_000);
+        assert_eq!(snap.cached_tokens, 12_000_000_000);
+        assert_eq!(snap.predicted_tokens, 3_000_000_000);
+        assert!(snap.total_prompt_tokens > u32::MAX as u64);
+
+        let luna = estimated_api_cost(5_000_000_000, 12_000_000_000, 3_000_000_000, &LUNA_RATES);
+        // Convert to f64 only for the cost formula; counters stay u64.
+        let expected = 5_000_000_000.0 / 1_000_000.0 * 0.20
+            + 12_000_000_000.0 / 1_000_000.0 * 0.02
+            + 3_000_000_000.0 / 1_000_000.0 * 1.20;
+        assert!((luna - expected).abs() < 1e-9);
+        assert!((luna - 4_840.0).abs() < 1e-9);
+        assert!((snap.saved_luna_usd - luna).abs() < 1e-12);
+    }
+
+    #[test]
+    fn token_counter_just_above_u32_does_not_wrap() {
+        let mut s = UsageStats::default();
+        s.apply_prometheus(4_294_967_296, 4_294_967_296, Some(4_294_967_296));
+        assert_eq!(s.prompt_tokens, 4_294_967_296);
+        assert_eq!(s.predicted_tokens, 4_294_967_296);
+        assert_eq!(s.cached_tokens, 4_294_967_296);
+        assert_ne!(s.prompt_tokens, 0);
+        assert!(s.prompt_tokens as i64 > 0);
+        let snap = s.snapshot();
+        assert_eq!(snap.total_prompt_tokens, 8_589_934_592);
+        let cost = estimated_api_cost(4_294_967_296, 4_294_967_296, 4_294_967_296, &LUNA_RATES);
+        let expected = 4_294_967_296.0 / 1_000_000.0 * (0.20 + 0.02 + 1.20);
+        assert!((cost - expected).abs() < 1e-6);
+        assert!(cost > 0.0);
+    }
+
+    #[test]
+    fn large_counters_serde_and_persistence_round_trip() {
+        let dir =
+            std::env::temp_dir().join(format!("llama-monitor-usage-u64-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("usage-stats.json");
+
+        let mut s = UsageStats::default();
+        s.apply_prometheus(5_000_000_000, 3_000_000_000, Some(12_000_000_000));
+        let json = serde_json::to_string(&s).unwrap();
+        let decoded: UsageStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.prompt_tokens, 5_000_000_000);
+        assert_eq!(decoded.cached_tokens, 12_000_000_000);
+        assert_eq!(decoded.predicted_tokens, 3_000_000_000);
+        assert_eq!(decoded.last_prompt, 5_000_000_000);
+        assert_eq!(decoded.last_cached, 12_000_000_000);
+
+        save_usage_stats(&path, &s).unwrap();
+        let loaded = load_usage_stats(&path);
+        assert_eq!(loaded.prompt_tokens, 5_000_000_000);
+        assert_eq!(loaded.cached_tokens, 12_000_000_000);
+        assert_eq!(loaded.predicted_tokens, 3_000_000_000);
+        assert_eq!(loaded.snapshot().total_prompt_tokens, 17_000_000_000);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn saturating_add_does_not_panic_near_u64_max() {
+        let mut s = UsageStats {
+            prompt_tokens: u64::MAX - 10,
+            cached_tokens: u64::MAX - 5,
+            ..Default::default()
+        };
+        s.apply_prometheus(100, 0, None);
+        assert_eq!(s.prompt_tokens, u64::MAX);
+        s.add_cached(50);
+        assert_eq!(s.cached_tokens, u64::MAX);
+    }
+
+    fn usage_sample(
+        cached: Option<u64>,
+        peak: Option<u64>,
+        draft: Option<u64>,
+        accepted: Option<u64>,
+    ) -> PrometheusUsageSample {
+        PrometheusUsageSample {
+            cached,
+            peak_context: peak,
+            mtp_draft: draft,
+            mtp_accepted: accepted,
+            ..Default::default()
+        }
+    }
+
+    // A
+    #[test]
+    fn cached_native_counter_increments_by_delta() {
+        let mut s = UsageStats {
+            cached_tokens: 1000,
+            last_cached: 1000,
+            native_cached_counter: true,
+            ..Default::default()
+        };
+        s.apply_sample(&usage_sample(Some(1300), None, None, None));
+        assert_eq!(s.cached_tokens, 1300);
+        assert_eq!(s.last_cached, 1300);
+    }
+
+    // B
+    #[test]
+    fn cached_native_counter_reset_adds_current() {
+        let mut s = UsageStats {
+            cached_tokens: 1000,
+            last_cached: 1000,
+            native_cached_counter: true,
+            ..Default::default()
+        };
+        s.apply_sample(&usage_sample(Some(200), None, None, None));
+        assert_eq!(s.cached_tokens, 1200);
+        assert_eq!(s.last_cached, 200);
+    }
+
+    // C
+    #[test]
+    fn native_cached_counter_wins_over_legacy_parse_cache_n() {
+        let mut s = UsageStats::default();
+        s.apply_sample(&usage_sample(Some(926_031), None, None, None));
+        assert!(!s.add_cached(926_031));
+        assert!(!s.add_cached(12_345));
+        assert_eq!(s.cached_tokens, 926_031);
+    }
+
+    // D
+    #[test]
+    fn scientific_notation_cached_total_applies_as_u64() {
+        let parsed = crate::llama::metrics::parse_prometheus_metrics(
+            "llamacpp:prompt_tokens_cached_total 4.65725e+06\n",
+        );
+        assert_eq!(parsed.prompt_tokens_cached_total, Some(4_657_250));
+        let mut s = UsageStats::default();
+        s.apply_sample(&usage_sample(
+            parsed.prompt_tokens_cached_total,
+            None,
+            None,
+            None,
+        ));
+        assert_eq!(s.cached_tokens, 4_657_250);
+    }
+
+    // E
+    #[test]
+    fn peak_context_persists_high_water_mark() {
+        let mut s = UsageStats {
+            peak_context_tokens: 58_818,
+            ..Default::default()
+        };
+        s.apply_sample(&usage_sample(None, Some(0), None, None));
+        assert_eq!(s.peak_context_tokens, 58_818);
+        s.apply_sample(&usage_sample(None, Some(42_000), None, None));
+        assert_eq!(s.peak_context_tokens, 58_818);
+        s.apply_sample(&usage_sample(None, Some(91_000), None, None));
+        assert_eq!(s.peak_context_tokens, 91_000);
+    }
+
+    // F
+    #[test]
+    fn mtp_normal_delta() {
+        let mut s = UsageStats {
+            mtp_draft_tokens: 1000,
+            mtp_accepted_tokens: 800,
+            last_mtp_draft: 1000,
+            last_mtp_accepted: 800,
+            ..Default::default()
+        };
+        s.apply_sample(&usage_sample(None, None, Some(1200), Some(950)));
+        assert_eq!(s.mtp_draft_tokens, 1200);
+        assert_eq!(s.mtp_accepted_tokens, 950);
+        assert_eq!(s.last_mtp_draft, 1200);
+        assert_eq!(s.last_mtp_accepted, 950);
+    }
+
+    // G
+    #[test]
+    fn mtp_reset_after_llama_restart() {
+        let mut s = UsageStats {
+            mtp_draft_tokens: 3198,
+            mtp_accepted_tokens: 2644,
+            last_mtp_draft: 3198,
+            last_mtp_accepted: 2644,
+            ..Default::default()
+        };
+        s.apply_sample(&usage_sample(None, None, Some(100), Some(80)));
+        assert_eq!(s.mtp_draft_tokens, 3298);
+        assert_eq!(s.mtp_accepted_tokens, 2724);
+        assert_eq!(s.last_mtp_draft, 100);
+        assert_eq!(s.last_mtp_accepted, 80);
+    }
+
+    // H
+    #[test]
+    fn lifetime_mtp_percentage() {
+        let s = UsageStats {
+            mtp_accepted_tokens: 2644,
+            mtp_draft_tokens: 3198,
+            ..Default::default()
+        };
+        let ratio = s.mtp_acceptance_ratio().unwrap();
+        assert!((ratio - 2644.0 / 3198.0).abs() < 1e-12);
+        assert!((ratio * 100.0 - 82.6767).abs() < 0.0001);
+        let snap = s.snapshot();
+        assert_eq!(snap.mtp_accepted_tokens, 2644);
+        assert_eq!(snap.mtp_draft_tokens, 3198);
+        assert!((snap.mtp_acceptance_ratio.unwrap() - ratio).abs() < 1e-12);
+    }
+
+    #[test]
+    fn lifetime_mtp_percentage_none_when_no_drafts() {
+        let s = UsageStats {
+            mtp_accepted_tokens: 0,
+            mtp_draft_tokens: 0,
+            ..Default::default()
+        };
+        assert!(s.mtp_acceptance_ratio().is_none());
+        assert!(s.snapshot().mtp_acceptance_ratio.is_none());
+    }
+
+    // I
+    #[test]
+    fn old_usage_json_without_new_fields_loads() {
+        let json = r#"{
+            "prompt_tokens": 100,
+            "predicted_tokens": 50,
+            "cached_tokens": 20,
+            "last_prompt": 100,
+            "last_predicted": 50,
+            "updated_at": 1
+        }"#;
+        let s: UsageStats = serde_json::from_str(json).unwrap();
+        assert_eq!(s.prompt_tokens, 100);
+        assert_eq!(s.predicted_tokens, 50);
+        assert_eq!(s.cached_tokens, 20);
+        assert_eq!(s.peak_context_tokens, 0);
+        assert_eq!(s.mtp_draft_tokens, 0);
+        assert_eq!(s.mtp_accepted_tokens, 0);
+        assert_eq!(s.last_mtp_draft, 0);
+        assert_eq!(s.last_mtp_accepted, 0);
+        assert!(!s.native_cached_counter);
+        assert_eq!(s.last_cached, 0);
+    }
+
+    // J
+    #[test]
+    fn monitor_restart_without_llama_restart_does_not_double_count() {
+        let dir = std::env::temp_dir().join(format!(
+            "llama-monitor-usage-no-double-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("usage-stats.json");
+
+        let mut s = UsageStats::default();
+        s.apply_sample(&PrometheusUsageSample {
+            prompt: 806_400,
+            predicted: 386_100,
+            cached: Some(926_031),
+            peak_context: Some(58_818),
+            mtp_draft: Some(3198),
+            mtp_accepted: Some(2644),
+        });
+        save_usage_stats(&path, &s).unwrap();
+
+        let mut loaded = load_usage_stats(&path);
+        assert_eq!(loaded.cached_tokens, 926_031);
+        assert_eq!(loaded.last_cached, 926_031);
+        assert_eq!(loaded.prompt_tokens, 806_400);
+        assert_eq!(loaded.last_prompt, 806_400);
+        assert_eq!(loaded.predicted_tokens, 386_100);
+        assert_eq!(loaded.last_predicted, 386_100);
+        assert_eq!(loaded.peak_context_tokens, 58_818);
+        assert_eq!(loaded.mtp_draft_tokens, 3198);
+        assert_eq!(loaded.mtp_accepted_tokens, 2644);
+        assert_eq!(loaded.last_mtp_draft, 3198);
+        assert_eq!(loaded.last_mtp_accepted, 2644);
+
+        loaded.apply_sample(&PrometheusUsageSample {
+            prompt: 806_400,
+            predicted: 386_100,
+            cached: Some(926_031),
+            peak_context: Some(58_818),
+            mtp_draft: Some(3198),
+            mtp_accepted: Some(2644),
+        });
+        assert_eq!(loaded.cached_tokens, 926_031);
+        assert_eq!(loaded.prompt_tokens, 806_400);
+        assert_eq!(loaded.predicted_tokens, 386_100);
+        assert_eq!(loaded.peak_context_tokens, 58_818);
+        assert_eq!(loaded.mtp_draft_tokens, 3198);
+        assert_eq!(loaded.mtp_accepted_tokens, 2644);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // K
+    #[test]
+    fn llama_restart_continues_cached_lifetime() {
+        let mut s = UsageStats {
+            cached_tokens: 926_031,
+            last_cached: 926_031,
+            native_cached_counter: true,
+            peak_context_tokens: 58_818,
+            mtp_draft_tokens: 3198,
+            mtp_accepted_tokens: 2644,
+            last_mtp_draft: 3198,
+            last_mtp_accepted: 2644,
+            ..Default::default()
+        };
+        s.apply_sample(&PrometheusUsageSample {
+            cached: Some(0),
+            peak_context: Some(0),
+            mtp_draft: Some(0),
+            mtp_accepted: Some(0),
+            ..Default::default()
+        });
+        assert_eq!(s.cached_tokens, 926_031);
+        assert_eq!(s.peak_context_tokens, 58_818);
+        assert_eq!(s.mtp_draft_tokens, 3198);
+        assert_eq!(s.mtp_accepted_tokens, 2644);
+
+        s.apply_sample(&PrometheusUsageSample {
+            cached: Some(300_000),
+            peak_context: Some(42_000),
+            mtp_draft: Some(100),
+            mtp_accepted: Some(80),
+            ..Default::default()
+        });
+        assert_eq!(s.cached_tokens, 1_226_031);
+        assert_eq!(s.peak_context_tokens, 58_818);
+        assert_eq!(s.mtp_draft_tokens, 3298);
+        assert_eq!(s.mtp_accepted_tokens, 2724);
+    }
+
+    // L
+    #[test]
+    fn lifetime_peak_and_mtp_above_u32_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "llama-monitor-usage-peak-mtp-u64-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("usage-stats.json");
+
+        let mut s = UsageStats::default();
+        s.apply_sample(&PrometheusUsageSample {
+            prompt: 5_000_000_000,
+            predicted: 3_000_000_000,
+            cached: Some(12_000_000_000),
+            peak_context: Some(4_294_967_296),
+            mtp_draft: Some(4_294_967_296),
+            mtp_accepted: Some(5_000_000_000),
+        });
+        assert_eq!(s.prompt_tokens, 5_000_000_000);
+        assert_eq!(s.cached_tokens, 12_000_000_000);
+        assert_eq!(s.predicted_tokens, 3_000_000_000);
+        assert_eq!(s.peak_context_tokens, 4_294_967_296);
+        assert_eq!(s.mtp_draft_tokens, 4_294_967_296);
+        assert_eq!(s.mtp_accepted_tokens, 5_000_000_000);
+
+        save_usage_stats(&path, &s).unwrap();
+        let loaded = load_usage_stats(&path);
+        assert_eq!(loaded.peak_context_tokens, 4_294_967_296);
+        assert_eq!(loaded.mtp_draft_tokens, 4_294_967_296);
+        assert_eq!(loaded.mtp_accepted_tokens, 5_000_000_000);
+        let snap = loaded.snapshot();
+        assert_eq!(snap.peak_context_tokens, 4_294_967_296);
+        assert_eq!(snap.mtp_draft_tokens, 4_294_967_296);
+        assert_eq!(snap.mtp_accepted_tokens, 5_000_000_000);
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["peak_context_tokens"].as_u64(), Some(4_294_967_296));
+        assert_eq!(json["mtp_draft_tokens"].as_u64(), Some(4_294_967_296));
+        assert_eq!(json["mtp_accepted_tokens"].as_u64(), Some(5_000_000_000));
+        assert!(json["peak_context_tokens"].as_u64().unwrap() > u32::MAX as u64);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_clears_peak_and_mtp_keeps_baselines() {
+        let mut s = UsageStats::default();
+        s.apply_sample(&PrometheusUsageSample {
+            prompt: 100,
+            predicted: 50,
+            cached: Some(20),
+            peak_context: Some(58_818),
+            mtp_draft: Some(3198),
+            mtp_accepted: Some(2644),
+        });
+        s.reset();
+        assert_eq!(s.peak_context_tokens, 0);
+        assert_eq!(s.mtp_draft_tokens, 0);
+        assert_eq!(s.mtp_accepted_tokens, 0);
+        assert_eq!(s.last_mtp_draft, 3198);
+        assert_eq!(s.last_mtp_accepted, 2644);
+        s.apply_sample(&PrometheusUsageSample {
+            prompt: 100,
+            predicted: 50,
+            cached: Some(20),
+            peak_context: Some(58_818),
+            mtp_draft: Some(3198),
+            mtp_accepted: Some(2644),
+        });
+        assert_eq!(s.mtp_draft_tokens, 0);
+        assert_eq!(s.mtp_accepted_tokens, 0);
+        assert_eq!(s.peak_context_tokens, 58_818);
     }
 }

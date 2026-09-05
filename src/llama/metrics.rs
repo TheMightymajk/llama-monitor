@@ -2,10 +2,12 @@
 /// this cycle (`0` is a valid idle reading and must not be replaced by averages).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LlamaMetrics {
-    /// Instantaneous prompt t/s from `/metrics` (`None` = unavailable).
+    /// Instantaneous prompt t/s (`None` = unavailable).
     pub prompt_tokens_per_sec: Option<f64>,
-    /// Instantaneous generation t/s from `/metrics` (`None` = unavailable).
+    /// Instantaneous generation t/s (`None` = unavailable).
     pub generation_tokens_per_sec: Option<f64>,
+    /// Runtime phase from process-counter deltas (`None` = unavailable).
+    pub inference_phase: Option<super::throughput::InferencePhase>,
     /// llama-server session counters from the last successful `/metrics` scrape.
     pub prompt_tokens_total: u64,
     pub predicted_tokens_total: u64,
@@ -23,17 +25,25 @@ pub struct LlamaMetrics {
     pub spec_acceptance_ratio: Option<f64>,
     pub n_busy_slots_per_decode: Option<f64>,
     pub status: String,
+    #[serde(skip)]
+    throughput: super::throughput::LiveThroughputTracker,
 }
 
 impl LlamaMetrics {
     /// Apply live gauges + session counters from a successful `/metrics` scrape.
-    /// A gauge of `0` stays `0` — never substitute lifetime averages.
     pub fn apply_metrics(&mut self, prom: &PrometheusValues) {
-        self.prompt_tokens_per_sec = Some(prom.prompt_tokens_per_sec);
-        self.generation_tokens_per_sec = Some(prom.predicted_tokens_per_sec);
-        self.prompt_tokens_total = prometheus_f64_to_u64(prom.prompt_tokens_total).unwrap_or(0);
-        self.predicted_tokens_total =
-            prometheus_f64_to_u64(prom.predicted_tokens_total).unwrap_or(0);
+        self.apply_metrics_at(prom, std::time::Instant::now());
+    }
+
+    pub fn apply_metrics_at(&mut self, prom: &PrometheusValues, now: std::time::Instant) {
+        let view = self
+            .throughput
+            .observe(&super::throughput::ThroughputSample::from(prom), now);
+        self.prompt_tokens_per_sec = Some(view.prompt_tokens_per_sec);
+        self.generation_tokens_per_sec = Some(view.generation_tokens_per_sec);
+        self.inference_phase = Some(view.phase);
+        self.prompt_tokens_total = prom.prompt_tokens_total;
+        self.predicted_tokens_total = prom.predicted_tokens_total;
         self.requests_processing = Some(prom.requests_processing);
         self.n_tokens_max = prom.n_tokens_max;
         self.spec_draft_tokens = prom.spec_decode_num_draft_tokens_total;
@@ -48,6 +58,7 @@ impl LlamaMetrics {
     pub fn clear_metrics_gauges(&mut self) {
         self.prompt_tokens_per_sec = None;
         self.generation_tokens_per_sec = None;
+        self.inference_phase = None;
         self.requests_processing = None;
     }
 
@@ -94,9 +105,10 @@ impl LlamaMetrics {
 pub struct PrometheusValues {
     pub prompt_tokens_per_sec: f64,
     pub predicted_tokens_per_sec: f64,
-    pub prompt_tokens_total: f64,
+    /// Session counters converted to u64 at parse time — never keep these as f64.
+    pub prompt_tokens_total: u64,
     pub prompt_seconds_total: f64,
-    pub predicted_tokens_total: f64,
+    pub predicted_tokens_total: u64,
     pub predicted_seconds_total: f64,
     pub requests_processing: u32,
     /// Present only when llama.cpp exports `llamacpp:prompt_tokens_cached_total`.
@@ -134,6 +146,20 @@ pub fn prometheus_f64_to_u64(value: f64) -> Option<u64> {
     Some(rounded as u64)
 }
 
+/// Parse a Prometheus counter. Digit-only strings go through u64 so values
+/// above the f64 mantissa (2^53) are not rounded. Scientific notation still
+/// uses f64, then [`prometheus_f64_to_u64`].
+pub fn parse_prometheus_counter(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if raw.as_bytes().iter().all(|b| b.is_ascii_digit()) {
+        return raw.parse::<u64>().ok();
+    }
+    raw.parse::<f64>().ok().and_then(prometheus_f64_to_u64)
+}
+
 /// Parse Prometheus text format and extract the metrics we care about.
 /// llama.cpp uses colon-separated names like `llamacpp:prompt_tokens_total`.
 pub fn parse_prometheus_metrics(body: &str) -> PrometheusValues {
@@ -147,33 +173,62 @@ pub fn parse_prometheus_metrics(body: &str) -> PrometheusValues {
             Some(n) => n,
             None => continue,
         };
-        let value = match parts.next().and_then(|v| v.parse::<f64>().ok()) {
+        let raw = match parts.next() {
             Some(v) => v,
             None => continue,
         };
         match name {
-            "llamacpp:prompt_tokens_seconds" => vals.prompt_tokens_per_sec = value,
-            "llamacpp:predicted_tokens_seconds" => vals.predicted_tokens_per_sec = value,
-            "llamacpp:prompt_tokens_total" => vals.prompt_tokens_total = value,
-            "llamacpp:prompt_seconds_total" => vals.prompt_seconds_total = value,
-            "llamacpp:tokens_predicted_total" => vals.predicted_tokens_total = value,
-            "llamacpp:tokens_predicted_seconds_total" => vals.predicted_seconds_total = value,
-            "llamacpp:requests_processing" => vals.requests_processing = value as u32,
-            "llamacpp:prompt_tokens_cached_total" => {
-                vals.prompt_tokens_cached_total = prometheus_f64_to_u64(value);
+            "llamacpp:prompt_tokens_seconds" => {
+                if let Ok(v) = raw.parse::<f64>() {
+                    vals.prompt_tokens_per_sec = v;
+                }
             }
-            "llamacpp:n_tokens_max" => vals.n_tokens_max = prometheus_f64_to_u64(value),
+            "llamacpp:predicted_tokens_seconds" => {
+                if let Ok(v) = raw.parse::<f64>() {
+                    vals.predicted_tokens_per_sec = v;
+                }
+            }
+            "llamacpp:prompt_tokens_total" => {
+                vals.prompt_tokens_total = parse_prometheus_counter(raw).unwrap_or(0);
+            }
+            "llamacpp:prompt_seconds_total" => {
+                if let Ok(v) = raw.parse::<f64>() {
+                    vals.prompt_seconds_total = v;
+                }
+            }
+            "llamacpp:tokens_predicted_total" => {
+                vals.predicted_tokens_total = parse_prometheus_counter(raw).unwrap_or(0);
+            }
+            "llamacpp:tokens_predicted_seconds_total" => {
+                if let Ok(v) = raw.parse::<f64>() {
+                    vals.predicted_seconds_total = v;
+                }
+            }
+            "llamacpp:requests_processing" => {
+                if let Ok(v) = raw.parse::<f64>()
+                    && v.is_finite()
+                    && v >= 0.0
+                {
+                    vals.requests_processing = v.round().min(u32::MAX as f64) as u32;
+                }
+            }
+            "llamacpp:prompt_tokens_cached_total" => {
+                vals.prompt_tokens_cached_total = parse_prometheus_counter(raw);
+            }
+            "llamacpp:n_tokens_max" => vals.n_tokens_max = parse_prometheus_counter(raw),
             "llamacpp:spec_decode_num_draft_tokens_total" => {
-                vals.spec_decode_num_draft_tokens_total = prometheus_f64_to_u64(value);
+                vals.spec_decode_num_draft_tokens_total = parse_prometheus_counter(raw);
             }
             "llamacpp:spec_decode_num_accepted_tokens_total" => {
-                vals.spec_decode_num_accepted_tokens_total = prometheus_f64_to_u64(value);
+                vals.spec_decode_num_accepted_tokens_total = parse_prometheus_counter(raw);
             }
             "llamacpp:spec_decode_num_drafts_total" => {
-                vals.spec_decode_num_drafts_total = prometheus_f64_to_u64(value);
+                vals.spec_decode_num_drafts_total = parse_prometheus_counter(raw);
             }
             "llamacpp:n_busy_slots_per_decode" => {
-                if value.is_finite() {
+                if let Ok(value) = raw.parse::<f64>()
+                    && value.is_finite()
+                {
                     vals.n_busy_slots_per_decode = Some(value);
                 }
             }
@@ -187,7 +242,7 @@ fn json_u64(v: &serde_json::Value, key: &str) -> Option<u64> {
     v.get(key).and_then(|x| {
         x.as_u64()
             .or_else(|| x.as_i64().and_then(|i| u64::try_from(i).ok()))
-            .or_else(|| x.as_f64().and_then(|f| (f >= 0.0).then_some(f as u64)))
+            .or_else(|| x.as_f64().and_then(prometheus_f64_to_u64))
     })
 }
 
@@ -245,9 +300,9 @@ mod tests {
 
         assert!((vals.prompt_tokens_per_sec - 1234.5).abs() < 0.1);
         assert!((vals.predicted_tokens_per_sec - 56.7).abs() < 0.1);
-        assert!((vals.prompt_tokens_total - 10000.0).abs() < 0.1);
+        assert_eq!(vals.prompt_tokens_total, 10_000);
         assert!((vals.prompt_seconds_total - 8.1).abs() < 0.1);
-        assert!((vals.predicted_tokens_total - 5000.0).abs() < 0.1);
+        assert_eq!(vals.predicted_tokens_total, 5_000);
         assert!((vals.predicted_seconds_total - 88.2).abs() < 0.1);
         assert_eq!(vals.requests_processing, 1);
         // High-water mark is present in the fixture but must not be parsed as live KV.
@@ -265,7 +320,7 @@ mod tests {
     fn test_parse_prometheus_metrics_comments_only() {
         let body = "# HELP llamacpp:prompt_tokens_total Total prompt tokens\n# TYPE llamacpp:prompt_tokens_total counter\n";
         let vals = parse_prometheus_metrics(body);
-        assert_eq!(vals.prompt_tokens_total, 0.0);
+        assert_eq!(vals.prompt_tokens_total, 0);
     }
 
     #[test]
@@ -355,32 +410,47 @@ mod tests {
         PrometheusValues {
             prompt_tokens_per_sec: prompt_tps,
             predicted_tokens_per_sec: gen_tps,
-            prompt_tokens_total: 10_000.0,
+            prompt_tokens_total: 10_000,
             prompt_seconds_total: 8.1,
-            predicted_tokens_total: 5_000.0,
+            predicted_tokens_total: 5_000,
             predicted_seconds_total: 88.2,
             requests_processing: 1,
             ..Default::default()
         }
     }
 
+    fn idle_prom() -> PrometheusValues {
+        PrometheusValues {
+            prompt_tokens_per_sec: 0.0,
+            predicted_tokens_per_sec: 0.0,
+            prompt_tokens_total: 10_000,
+            prompt_seconds_total: 8.1,
+            predicted_tokens_total: 5_000,
+            predicted_seconds_total: 88.2,
+            requests_processing: 0,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn live_prompt_speed_zero_is_not_lifetime_average() {
+        let t0 = std::time::Instant::now();
         let mut m = LlamaMetrics::default();
-        m.apply_metrics(&sample_prom(42.0, 20.0));
-        assert_eq!(m.prompt_tokens_per_sec, Some(42.0));
-        m.apply_metrics(&sample_prom(0.0, 20.0));
+        m.apply_metrics_at(&idle_prom(), t0);
         assert_eq!(m.prompt_tokens_per_sec, Some(0.0));
+        assert_eq!(
+            m.inference_phase,
+            Some(crate::llama::throughput::InferencePhase::Idle)
+        );
         let lifetime = 10_000.0 / 8.1;
         assert!((m.prompt_tokens_per_sec.unwrap() - lifetime).abs() > 1.0);
     }
 
     #[test]
     fn live_generation_speed_zero_is_not_lifetime_average() {
+        let t0 = std::time::Instant::now();
         let mut m = LlamaMetrics::default();
-        m.apply_metrics(&sample_prom(10.0, 55.0));
-        assert_eq!(m.generation_tokens_per_sec, Some(55.0));
-        m.apply_metrics(&sample_prom(10.0, 0.0));
+        m.apply_metrics_at(&idle_prom(), t0);
         assert_eq!(m.generation_tokens_per_sec, Some(0.0));
         let lifetime = 5_000.0 / 88.2;
         assert!((m.generation_tokens_per_sec.unwrap() - lifetime).abs() > 1.0);
@@ -389,18 +459,20 @@ mod tests {
     #[test]
     fn live_zero_serializes_as_zero_not_null() {
         let mut m = LlamaMetrics::default();
-        m.apply_metrics(&sample_prom(0.0, 0.0));
+        m.apply_metrics(&idle_prom());
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["prompt_tokens_per_sec"], 0.0);
         assert_eq!(v["generation_tokens_per_sec"], 0.0);
+        assert_eq!(v["inference_phase"], "idle");
         m.clear_metrics_gauges();
         let v = serde_json::to_value(&m).unwrap();
         assert!(v["prompt_tokens_per_sec"].is_null());
         assert!(v["generation_tokens_per_sec"].is_null());
+        assert!(v["inference_phase"].is_null());
     }
 
     #[test]
-    fn metrics_failure_clears_live_speed_keeps_session_counters() {
+    fn metrics_failure_clears_live_speed_and_phase() {
         let mut m = LlamaMetrics::default();
         m.apply_metrics(&sample_prom(42.0, 18.0));
         assert_eq!(m.prompt_tokens_total, 10_000);
@@ -408,6 +480,7 @@ mod tests {
         m.clear_metrics_gauges();
         assert_eq!(m.prompt_tokens_per_sec, None);
         assert_eq!(m.generation_tokens_per_sec, None);
+        assert_eq!(m.inference_phase, None);
         assert_eq!(m.requests_processing, None);
         assert_eq!(m.prompt_tokens_total, 10_000);
         assert_eq!(m.predicted_tokens_total, 5_000);
@@ -431,7 +504,11 @@ mod tests {
         assert_eq!(m.kv_cache_max, None);
         assert_eq!(m.slots_idle, None);
         assert_eq!(m.slots_processing, None);
-        assert_eq!(m.prompt_tokens_per_sec, Some(12.0));
+        assert_eq!(
+            m.inference_phase,
+            Some(crate::llama::throughput::InferencePhase::Generating)
+        );
+        assert_eq!(m.prompt_tokens_per_sec, Some(0.0));
         assert_eq!(m.generation_tokens_per_sec, Some(8.0));
     }
 
@@ -469,10 +546,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_prompt_tokens_cached_total_scientific_notation() {
+        let vals = parse_prometheus_metrics("llamacpp:prompt_tokens_cached_total 4.65725e+06\n");
+        assert_eq!(vals.prompt_tokens_cached_total, Some(4_657_250));
+    }
+
+    #[test]
     fn live_server_processed_and_predicted_totals() {
         let vals = live_server_prom();
-        assert!((vals.prompt_tokens_total - 251_342.0).abs() < 0.1);
-        assert!((vals.predicted_tokens_total - 71_788.0).abs() < 0.1);
+        assert_eq!(vals.prompt_tokens_total, 251_342);
+        assert_eq!(vals.predicted_tokens_total, 71_788);
     }
 
     #[test]
@@ -572,5 +655,114 @@ mod tests {
         assert!((m.n_busy_slots_per_decode.unwrap() - 1.05701).abs() < 1e-5);
         assert_eq!(m.prompt_tokens_per_sec, Some(0.0));
         assert_eq!(m.generation_tokens_per_sec, Some(0.0));
+        assert_eq!(
+            m.inference_phase,
+            Some(crate::llama::throughput::InferencePhase::Idle)
+        );
+    }
+
+    #[test]
+    fn apply_metrics_prompt_delta_sets_prefill_speed() {
+        let t0 = std::time::Instant::now();
+        let mut m = LlamaMetrics::default();
+        let mut prom = idle_prom();
+        prom.requests_processing = 1;
+        m.apply_metrics_at(&prom, t0);
+        prom.prompt_tokens_total = 10_400;
+        m.apply_metrics_at(&prom, t0 + std::time::Duration::from_secs(1));
+        assert_eq!(
+            m.inference_phase,
+            Some(crate::llama::throughput::InferencePhase::Prefill)
+        );
+        assert_eq!(m.prompt_tokens_per_sec, Some(400.0));
+        assert_eq!(m.generation_tokens_per_sec, Some(0.0));
+    }
+
+    #[test]
+    fn parse_prometheus_counter_digit_string_is_u64() {
+        assert_eq!(parse_prometheus_counter("0"), Some(0));
+        assert_eq!(parse_prometheus_counter("4294967296"), Some(4_294_967_296));
+        assert_eq!(
+            parse_prometheus_counter("9007199254740993"),
+            Some(9_007_199_254_740_993)
+        );
+        assert_eq!(parse_prometheus_counter("4.65725e+06"), Some(4_657_250));
+        assert_eq!(parse_prometheus_counter("-1"), None);
+        assert_eq!(parse_prometheus_counter("NaN"), None);
+        assert_eq!(parse_prometheus_counter("+Inf"), None);
+    }
+
+    #[test]
+    fn prometheus_token_counters_above_u32_stay_u64() {
+        let body = "\
+llamacpp:prompt_tokens_total 5000000000
+llamacpp:tokens_predicted_total 3000000000
+llamacpp:prompt_tokens_cached_total 12000000000
+llamacpp:spec_decode_num_draft_tokens_total 4294967296
+llamacpp:spec_decode_num_accepted_tokens_total 5000000000
+llamacpp:spec_decode_num_drafts_total 4294967296
+";
+        let vals = parse_prometheus_metrics(body);
+        assert_eq!(vals.prompt_tokens_total, 5_000_000_000);
+        assert_eq!(vals.predicted_tokens_total, 3_000_000_000);
+        assert_eq!(vals.prompt_tokens_cached_total, Some(12_000_000_000));
+        assert_eq!(vals.spec_decode_num_draft_tokens_total, Some(4_294_967_296));
+        assert_eq!(
+            vals.spec_decode_num_accepted_tokens_total,
+            Some(5_000_000_000)
+        );
+        assert_eq!(vals.spec_decode_num_drafts_total, Some(4_294_967_296));
+        assert_ne!(vals.prompt_tokens_total, 0);
+        assert_ne!(vals.prompt_tokens_total as i64, i32::MIN as i64);
+
+        let mut m = LlamaMetrics::default();
+        m.apply_metrics(&vals);
+        assert_eq!(m.prompt_tokens_total, 5_000_000_000);
+        assert_eq!(m.predicted_tokens_total, 3_000_000_000);
+        assert_eq!(m.spec_draft_tokens, Some(4_294_967_296));
+        assert_eq!(m.spec_accepted_tokens, Some(5_000_000_000));
+        assert_eq!(m.spec_drafts, Some(4_294_967_296));
+        let json = serde_json::to_value(&m).unwrap();
+        assert_eq!(json["prompt_tokens_total"], 5_000_000_000_u64);
+        assert_eq!(json["predicted_tokens_total"], 3_000_000_000_u64);
+        assert_eq!(json["spec_draft_tokens"], 4_294_967_296_u64);
+    }
+
+    #[test]
+    fn prometheus_u32_overflow_plus_one_does_not_wrap() {
+        let body = "llamacpp:prompt_tokens_total 4294967296\n";
+        let vals = parse_prometheus_metrics(body);
+        assert_eq!(vals.prompt_tokens_total, 4_294_967_296);
+        assert_ne!(vals.prompt_tokens_total, 0);
+        assert!(vals.prompt_tokens_total > u32::MAX as u64);
+    }
+
+    #[test]
+    fn prometheus_preserves_integers_beyond_f64_mantissa() {
+        let body = "llamacpp:prompt_tokens_total 9007199254740993\n";
+        let vals = parse_prometheus_metrics(body);
+        assert_eq!(vals.prompt_tokens_total, 9_007_199_254_740_993);
+        assert_ne!(
+            prometheus_f64_to_u64(9_007_199_254_740_993.0),
+            Some(9_007_199_254_740_993)
+        );
+    }
+
+    #[test]
+    fn llama_metrics_large_counters_serde_round_trip() {
+        let mut m = LlamaMetrics::default();
+        m.prompt_tokens_total = 5_000_000_000;
+        m.predicted_tokens_total = 3_000_000_000;
+        m.spec_draft_tokens = Some(4_294_967_296);
+        m.spec_accepted_tokens = Some(12_000_000_000);
+        m.spec_drafts = Some(4_294_967_296);
+        let json = serde_json::to_string(&m).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["prompt_tokens_total"].as_u64(), Some(5_000_000_000));
+        assert_eq!(v["predicted_tokens_total"].as_u64(), Some(3_000_000_000));
+        assert_eq!(v["spec_draft_tokens"].as_u64(), Some(4_294_967_296));
+        assert_eq!(v["spec_accepted_tokens"].as_u64(), Some(12_000_000_000));
+        assert!(v["prompt_tokens_total"].as_u64().unwrap() > u32::MAX as u64);
+        assert!(v["prompt_tokens_total"].as_i64().unwrap() > 0);
     }
 }

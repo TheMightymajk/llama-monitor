@@ -142,7 +142,7 @@ The preset editor groups parameters into collapsible sections:
 
 ### Lifetime usage
 
-Prompt processed, prompt reused (from `llamacpp:prompt_tokens_cached_total`), total prompt, and generated tokens are accumulated across llama-server and monitor restarts into `~/.config/llama-monitor/usage-stats.json`. Older llama.cpp builds that lack the cached counter fall back to per-request `cache_n` in logs/SSE. The Dashboard Lifetime panel estimates the cloud API cost of that workload versus official GPT-5.6 Luna rates (`$0.20 / $0.02 cached / $1.20` per 1M) and Qwen3.8-27B Alibaba Model Studio International/Singapore rates (`$0.50 / $0.10 implicit cache / $3.00` per 1M). GPU electricity is **not** subtracted. Use **Reset** to clear counters.
+Prompt processed, prompt reused (from `llamacpp:prompt_tokens_cached_total`), total prompt, generated tokens, peak context (`n_tokens_max` high-water), and MTP draft/accepted counters are accumulated across llama-server and monitor restarts into `~/.config/llama-monitor/usage-stats.json`. Older llama.cpp builds that lack the cached counter fall back to per-request `cache_n` in logs/SSE. The Dashboard Lifetime panel estimates the cloud API cost of that workload versus official GPT-5.6 Luna rates (`$0.20 / $0.02 cached / $1.20` per 1M) and Qwen3.8-27B Alibaba Model Studio International/Singapore rates (`$0.50 / $0.10 implicit cache / $3.00` per 1M). GPU electricity is **not** subtracted. Use **Reset** to clear counters.
 
 ### GPU energy cost
 
@@ -158,7 +158,7 @@ Changing the tariff updates future cost only; stored kWh and historical PLN amou
 ## Web UI
 
 ### Server Tab
-Control bar with preset selector and port. Start/stop the server. Live inference metrics (prompt/generation speed, context usage, slot status), lifetime token/savings panel, GPU energy cost card (inference + total PLN/kWh), and GPU monitoring table (temperature, load, VRAM, power, clocks).
+Control bar with preset selector and port. Start/stop the server. Live inference speed is a short-lived runtime reading (prefill vs generating vs idle) from process-counter deltas, not lifetime averages, and is not persisted.
 
 ### Chat Tab
 Streaming chat interface that proxies to the running llama-server's `/v1/chat/completions` endpoint on the configured port. Supports reasoning/thinking blocks and Markdown rendering.

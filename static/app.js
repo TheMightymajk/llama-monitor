@@ -818,10 +818,33 @@ function fmtMib(mib) {
 }
 
 function fmtTokens(n) {
-    if (n == null || Number.isNaN(n)) return '—';
+    // Token counters stay as Number. Integers are exact through
+    // Number.MAX_SAFE_INTEGER = 9_007_199_254_740_991, which covers
+    // practical lifetime totals for this monitor. Never use bitwise
+    // operators on token counters: they coerce to 32-bit integers and
+    // wrap values above 4_294_967_295.
+    if (n == null || n === '') return '—';
     const v = Number(n);
-    if (v >= 1_000_000) return (v / 1_000_000).toFixed(2) + 'M';
-    if (v >= 10_000) return (v / 1_000).toFixed(1) + 'k';
+    if (!Number.isFinite(v) || Number.isNaN(v) || v < 0) return '—';
+    if (v < 1000) return Math.round(v).toLocaleString();
+    const units = [
+        [1e12, 'T'],
+        [1e9, 'B'],
+        [1e6, 'M'],
+        [1e3, 'k']
+    ];
+    for (const [div, suffix] of units) {
+        if (v >= div) {
+            const scaled = v / div;
+            const decimals = scaled < 10 ? 2 : 1;
+            let s = scaled.toFixed(decimals);
+            if (s.indexOf('.') >= 0) {
+                s = s.replace(/0+$/, '');
+                if (s.endsWith('.')) s += '0';
+            }
+            return s + suffix;
+        }
+    }
     return v.toLocaleString();
 }
 
@@ -894,9 +917,11 @@ function applyUsage(u) {
     text('u-prompt', fmtTokens(u.prompt_tokens));
     text('u-gen', fmtTokens(u.predicted_tokens));
     text('u-cache', fmtTokens(u.cached_tokens));
+    // Keep counters as Number (exact through Number.MAX_SAFE_INTEGER).
+    // Do not coerce with bitwise operators; they wrap at 32 bits.
     const total = u.total_prompt_tokens != null
-        ? u.total_prompt_tokens
-        : (Number(u.prompt_tokens) || 0) + (Number(u.cached_tokens) || 0);
+        ? Number(u.total_prompt_tokens)
+        : Number(u.prompt_tokens) + Number(u.cached_tokens);
     text('u-total', fmtTokens(total));
     const reuse = u.cache_reuse_ratio != null ? u.cache_reuse_ratio : u.cache_hit_ratio;
     const ratio = reuse != null ? (reuse * 100).toFixed(1) + '% reuse' : '—';
@@ -992,6 +1017,14 @@ function applyWsPayload(d) {
     text('m-gen', fmtLiveTps(l.generation_tokens_per_sec));
     text('hero-prompt', fmtLiveTpsHero(l.prompt_tokens_per_sec));
     text('hero-gen', fmtLiveTpsHero(l.generation_tokens_per_sec));
+    const phase = l.inference_phase;
+    if (phase == null) {
+        text('m-prompt-sub', '—');
+        text('m-gen-sub', '—');
+    } else {
+        text('m-prompt-sub', phase === 'prefill' ? 'prefill' : 'idle');
+        text('m-gen-sub', phase === 'generating' ? 'generating' : 'idle');
+    }
     if (l.kv_cache_tokens != null && l.kv_cache_max != null) {
         const pct = l.kv_cache_max > 0
             ? ((l.kv_cache_tokens / l.kv_cache_max) * 100).toFixed(1)
@@ -1000,29 +1033,32 @@ function applyWsPayload(d) {
     } else {
         text('m-ctx', '—');
     }
-    if (l.n_tokens_max != null) {
-        text('m-peak', fmtTokens(l.n_tokens_max));
+    const usage = d.usage || {};
+    const peak = Number(usage.peak_context_tokens);
+    if (Number.isFinite(peak) && peak > 0) {
+        text('m-peak', fmtTokens(peak));
         const slotCount = (l.slots_idle != null && l.slots_processing != null)
             ? l.slots_idle + l.slots_processing
             : null;
         if (l.kv_cache_max != null && slotCount === 1 && l.kv_cache_max > 0) {
-            const peakPct = ((l.n_tokens_max / l.kv_cache_max) * 100).toFixed(1);
-            text('m-peak-sub', fmtTokens(l.kv_cache_max) + ' cap · ' + peakPct + '%');
+            const peakPct = ((peak / l.kv_cache_max) * 100).toFixed(1);
+            text('m-peak-sub', fmtTokens(l.kv_cache_max) + ' cap · ' + peakPct + '% · lifetime');
         } else {
-            text('m-peak-sub', 'session high-water');
+            text('m-peak-sub', 'lifetime high-water');
         }
     } else {
         text('m-peak', '—');
-        text('m-peak-sub', 'session high-water');
+        text('m-peak-sub', 'lifetime high-water');
     }
-    if (l.spec_acceptance_ratio != null && !Number.isNaN(Number(l.spec_acceptance_ratio))) {
-        text('m-mtp', (Number(l.spec_acceptance_ratio) * 100).toFixed(1) + '%');
-        const accepted = l.spec_accepted_tokens != null ? fmtTokens(l.spec_accepted_tokens) : '—';
-        const drafted = l.spec_draft_tokens != null ? fmtTokens(l.spec_draft_tokens) : '—';
-        text('m-mtp-sub', accepted + ' accepted / ' + drafted + ' drafted');
+    const mtpRatio = usage.mtp_acceptance_ratio;
+    if (mtpRatio != null && !Number.isNaN(Number(mtpRatio))) {
+        text('m-mtp', (Number(mtpRatio) * 100).toFixed(1) + '%');
+        const accepted = fmtTokens(usage.mtp_accepted_tokens);
+        const drafted = fmtTokens(usage.mtp_draft_tokens);
+        text('m-mtp-sub', accepted + ' accepted / ' + drafted + ' drafted · lifetime');
     } else {
         text('m-mtp', '—');
-        text('m-mtp-sub', 'speculative decode');
+        text('m-mtp-sub', 'lifetime speculative decode');
     }
     if (l.slots_idle != null && l.slots_processing != null) {
         text('m-slots', l.slots_idle + ' idle / ' + l.slots_processing + ' busy');
@@ -1105,8 +1141,16 @@ function applyWsPayload(d) {
 
     const badgeParts = [];
     if (serverRunning) badgeParts.push('Running');
-    if (l.generation_tokens_per_sec != null && l.generation_tokens_per_sec > 0) {
-        badgeParts.push(l.generation_tokens_per_sec.toFixed(1) + 't/s');
+    if (l.inference_phase === 'prefill') {
+        badgeParts.push('prefill');
+        if (l.prompt_tokens_per_sec != null && l.prompt_tokens_per_sec > 0) {
+            badgeParts.push(l.prompt_tokens_per_sec.toFixed(1) + 't/s');
+        }
+    } else if (l.inference_phase === 'generating') {
+        badgeParts.push('generating');
+        if (l.generation_tokens_per_sec != null && l.generation_tokens_per_sec > 0) {
+            badgeParts.push(l.generation_tokens_per_sec.toFixed(1) + 't/s');
+        }
     }
     const gpuEntries = Object.entries(d.gpu || {});
     if (gpuEntries.length > 0) badgeParts.push(Math.max(...gpuEntries.map(([, m]) => m.temp)).toFixed(0) + 'C');

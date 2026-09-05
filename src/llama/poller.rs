@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::state::AppState;
 
-use super::metrics::{parse_prometheus_metrics, prometheus_f64_to_u64};
+use super::metrics::parse_prometheus_metrics;
 use super::running_model::{
     HealthStickiness, ModelDiscoveryPartial, merge_running_model, parse_props_json,
     parse_v1_models_json,
@@ -88,11 +88,14 @@ pub async fn llama_metrics_poller(state: AppState) {
             }
             {
                 let mut usage = state.usage.lock().unwrap();
-                usage.apply_prometheus(
-                    prometheus_f64_to_u64(prom.prompt_tokens_total).unwrap_or(0),
-                    prometheus_f64_to_u64(prom.predicted_tokens_total).unwrap_or(0),
-                    prom.prompt_tokens_cached_total,
-                );
+                usage.apply_sample(&crate::usage::PrometheusUsageSample {
+                    prompt: prom.prompt_tokens_total,
+                    predicted: prom.predicted_tokens_total,
+                    cached: prom.prompt_tokens_cached_total,
+                    peak_context: prom.n_tokens_max,
+                    mtp_draft: prom.spec_decode_num_draft_tokens_total,
+                    mtp_accepted: prom.spec_decode_num_accepted_tokens_total,
+                });
                 let _ = usage.maybe_save(&state.usage_path, false);
             }
             true
