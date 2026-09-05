@@ -23,7 +23,7 @@ Web dashboard for managing [llama.cpp](https://github.com/ggerganov/llama.cpp) s
 - **Server Management** -- Start/stop llama.cpp server from configurable presets
 - **Real-time GPU Monitoring** -- Temperature, load, VRAM, power, clock speeds (AMD ROCm + NVIDIA)
 - **Inference Metrics** -- Prompt/generation speed, KV cache usage, slot status via Prometheus endpoint
-- **Lifetime Usage & Savings** -- Persistent prompt/generation/cache-hit totals with estimated $ saved vs GPT-5.6 Luna and Qwen3.8-27B API
+- **Lifetime Usage & Savings** -- Persistent prompt processed / reused / generated totals with estimated API cost vs GPT-5.6 Luna and Qwen3.8-27B (GPU electricity is shown separately and is not subtracted)
 - **GPU Energy Cost** -- Persistent GPU power integration (PLN) with inference vs total breakdown; default tariff 1 PLN/kWh
 - **Customizable Presets** -- Create, edit, copy, delete model presets with all llama.cpp parameters; persisted to disk
 - **File Browser** -- Browse the filesystem to select llama-server binary and .gguf model files
@@ -142,7 +142,7 @@ The preset editor groups parameters into collapsible sections:
 
 ### Lifetime usage
 
-Prompt processed, generation, and KV prefix-cache hit totals are accumulated across llama-server and monitor restarts into `~/.config/llama-monitor/usage-stats.json`. The Dashboard Lifetime panel estimates dollars saved versus GPT-5.6 Luna and official Qwen3.8-27B Alibaba API rates (GPU electricity is not subtracted). Use **Reset** to clear counters.
+Prompt processed, prompt reused (from `llamacpp:prompt_tokens_cached_total`), total prompt, and generated tokens are accumulated across llama-server and monitor restarts into `~/.config/llama-monitor/usage-stats.json`. Older llama.cpp builds that lack the cached counter fall back to per-request `cache_n` in logs/SSE. The Dashboard Lifetime panel estimates the cloud API cost of that workload versus official GPT-5.6 Luna rates (`$0.20 / $0.02 cached / $1.20` per 1M) and Qwen3.8-27B Alibaba Model Studio International/Singapore rates (`$0.50 / $0.10 implicit cache / $3.00` per 1M). GPU electricity is **not** subtracted. Use **Reset** to clear counters.
 
 ### GPU energy cost
 
@@ -177,7 +177,7 @@ src/
   logs/
     mod.rs             -- LogBuffer, external file follow (tail -F), source metadata
   usage/
-    mod.rs             -- Lifetime token counters, cache hits, $ savings, usage-stats.json
+    mod.rs             -- Lifetime token counters, cache reuse, $ savings, usage-stats.json
   energy/
     mod.rs             -- GPU power integration, inference classification, energy.json persistence
   gpu/
