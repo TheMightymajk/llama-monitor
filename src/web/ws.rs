@@ -150,4 +150,38 @@ mod tests {
         assert!(payload["server_started_at"].is_null());
         assert_eq!(payload["logs"][0], "line");
     }
+
+    #[test]
+    fn ws_payload_exposes_lifetime_and_mtp_diagnostics() {
+        let mut usage = crate::usage::UsageStats::default();
+        usage.apply_prometheus(251_342, 71_788, Some(4_657_250));
+        let snap = usage.snapshot();
+        let mut llama = LlamaMetrics::default();
+        llama.apply_metrics(&crate::llama::metrics::parse_prometheus_metrics(
+            include_str!("../../tests/fixtures/prometheus_metrics_live_server.txt"),
+        ));
+
+        let payload = build_ws_payload(
+            &None,
+            &llama,
+            &[],
+            &LogSourceInfo::default(),
+            true,
+            Some(1),
+            &snap,
+            &empty_running_model(),
+            &empty_energy(),
+        );
+        assert_eq!(payload["usage"]["prompt_tokens"], 251_342);
+        assert_eq!(payload["usage"]["cached_tokens"], 4_657_250);
+        assert_eq!(payload["usage"]["total_prompt_tokens"], 4_908_592);
+        assert_eq!(payload["usage"]["predicted_tokens"], 71_788);
+        assert!(payload["usage"]["cache_reuse_ratio"].as_f64().unwrap() > 0.94);
+        assert_eq!(payload["llama"]["n_tokens_max"], 113_868);
+        assert_eq!(payload["llama"]["spec_accepted_tokens"], 31_710);
+        assert_eq!(payload["llama"]["spec_draft_tokens"], 40_018);
+        assert!(payload["llama"]["spec_acceptance_ratio"].as_f64().unwrap() > 0.79);
+        assert_eq!(payload["llama"]["prompt_tokens_per_sec"], 0.0);
+        assert!(payload["llama"]["kv_cache_tokens"].is_null());
+    }
 }

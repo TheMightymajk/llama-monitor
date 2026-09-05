@@ -829,8 +829,7 @@ function fmtUsd(n) {
     if (n == null || Number.isNaN(n)) return '—';
     const v = Number(n);
     if (v === 0) return '$0.00';
-    if (v < 0.01) return '$' + v.toFixed(4);
-    if (v < 1) return '$' + v.toFixed(3);
+    if (v > 0 && v < 0.01) return '$' + v.toFixed(4);
     return '$' + v.toFixed(2);
 }
 
@@ -887,6 +886,7 @@ function applyUsage(u) {
         text('u-gen', '—');
         text('u-cache', '—');
         text('u-cache-ratio', '—');
+        text('u-total', '—');
         text('u-luna', '—');
         text('u-qwen', '—');
         return;
@@ -894,16 +894,27 @@ function applyUsage(u) {
     text('u-prompt', fmtTokens(u.prompt_tokens));
     text('u-gen', fmtTokens(u.predicted_tokens));
     text('u-cache', fmtTokens(u.cached_tokens));
-    const ratio = u.cache_hit_ratio != null ? (u.cache_hit_ratio * 100).toFixed(1) + '% hit' : '—';
+    const total = u.total_prompt_tokens != null
+        ? u.total_prompt_tokens
+        : (Number(u.prompt_tokens) || 0) + (Number(u.cached_tokens) || 0);
+    text('u-total', fmtTokens(total));
+    const reuse = u.cache_reuse_ratio != null ? u.cache_reuse_ratio : u.cache_hit_ratio;
+    const ratio = reuse != null ? (reuse * 100).toFixed(1) + '% reuse' : '—';
     text('u-cache-ratio', ratio);
     text('u-luna', fmtUsd(u.saved_luna_usd));
     text('u-qwen', fmtUsd(u.saved_qwen_usd));
     if (u.rates) {
         const tag = $('usage-rates-tag');
+        const lunaCached = u.rates.luna_cached_input_per_m != null
+            ? u.rates.luna_cached_input_per_m
+            : u.rates.luna_input_per_m;
+        const qwenCached = u.rates.qwen_cached_input_per_m != null
+            ? u.rates.qwen_cached_input_per_m
+            : u.rates.qwen_input_per_m;
         tag.title =
-            'GPT-5.6 Luna $' + u.rates.luna_input_per_m + '/$'+ u.rates.luna_output_per_m +
-            ' · Qwen3.8-27B $' + u.rates.qwen_input_per_m + '/$' + u.rates.qwen_output_per_m +
-            ' per 1M in/out · ' + (u.rates.label || '');
+            'GPT-5.6 Luna $' + u.rates.luna_input_per_m + '/cached $' + lunaCached + '/$' + u.rates.luna_output_per_m +
+            ' · Qwen3.8-27B $' + u.rates.qwen_input_per_m + '/cached $' + qwenCached + '/$' + u.rates.qwen_output_per_m +
+            ' per 1M in/cached/out · Saved = estimated API cost (GPU energy not subtracted) · ' + (u.rates.label || '');
     }
 }
 
@@ -988,6 +999,30 @@ function applyWsPayload(d) {
         text('m-ctx', l.kv_cache_tokens + ' / ' + l.kv_cache_max + ' (' + pct + '%)');
     } else {
         text('m-ctx', '—');
+    }
+    if (l.n_tokens_max != null) {
+        text('m-peak', fmtTokens(l.n_tokens_max));
+        const slotCount = (l.slots_idle != null && l.slots_processing != null)
+            ? l.slots_idle + l.slots_processing
+            : null;
+        if (l.kv_cache_max != null && slotCount === 1 && l.kv_cache_max > 0) {
+            const peakPct = ((l.n_tokens_max / l.kv_cache_max) * 100).toFixed(1);
+            text('m-peak-sub', fmtTokens(l.kv_cache_max) + ' cap · ' + peakPct + '%');
+        } else {
+            text('m-peak-sub', 'session high-water');
+        }
+    } else {
+        text('m-peak', '—');
+        text('m-peak-sub', 'session high-water');
+    }
+    if (l.spec_acceptance_ratio != null && !Number.isNaN(Number(l.spec_acceptance_ratio))) {
+        text('m-mtp', (Number(l.spec_acceptance_ratio) * 100).toFixed(1) + '%');
+        const accepted = l.spec_accepted_tokens != null ? fmtTokens(l.spec_accepted_tokens) : '—';
+        const drafted = l.spec_draft_tokens != null ? fmtTokens(l.spec_draft_tokens) : '—';
+        text('m-mtp-sub', accepted + ' accepted / ' + drafted + ' drafted');
+    } else {
+        text('m-mtp', '—');
+        text('m-mtp-sub', 'speculative decode');
     }
     if (l.slots_idle != null && l.slots_processing != null) {
         text('m-slots', l.slots_idle + ' idle / ' + l.slots_processing + ' busy');

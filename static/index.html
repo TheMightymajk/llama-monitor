@@ -125,6 +125,8 @@
                 <div class="metric-card"><div class="metric-label">Prompt Speed</div><div class="metric-value prompt" id="m-prompt">—</div></div>
                 <div class="metric-card"><div class="metric-label">Generation Speed</div><div class="metric-value gen" id="m-gen">—</div></div>
                 <div class="metric-card"><div class="metric-label">Context (KV Cache)</div><div class="metric-value ctx" id="m-ctx">—</div></div>
+                <div class="metric-card"><div class="metric-label">Peak Context</div><div class="metric-value ctx" id="m-peak">—</div><div class="metric-sub" id="m-peak-sub">session high-water</div></div>
+                <div class="metric-card"><div class="metric-label">MTP Acceptance</div><div class="metric-value gen" id="m-mtp">—</div><div class="metric-sub" id="m-mtp-sub">speculative decode</div></div>
                 <div class="metric-card"><div class="metric-label">Slots</div><div class="metric-value slots" id="m-slots">—</div></div>
                 <div class="metric-card"><div class="metric-label">Server Status</div><div class="metric-value" id="m-status">—</div></div>
             </div>
@@ -132,18 +134,19 @@
 
         <section class="panel" id="lifetime-panel">
             <div class="panel-head">
-                <h2 title="Lifetime totals survive monitor and llama-server restarts. Saved $ = local tokens × cloud API rates (GPU power not subtracted).">Lifetime</h2>
+                <h2 title="Lifetime totals survive monitor and llama-server restarts. Saved $ is the estimated cloud API cost of this local workload. GPU electricity is shown separately and is not subtracted.">Lifetime</h2>
                 <div class="panel-head-actions">
-                    <span class="source-tag" id="usage-rates-tag" title="Comparison rates">rates Sep 2026</span>
+                    <span class="source-tag" id="usage-rates-tag" title="Comparison rates">official API rates</span>
                     <button type="button" class="btn-sm btn-preset" id="btn-usage-reset" title="Reset lifetime counters">Reset</button>
                 </div>
             </div>
             <div class="inference-panel" id="lifetime">
-                <div class="metric-card"><div class="metric-label">Prompt processed</div><div class="metric-value prompt" id="u-prompt">—</div></div>
+                <div class="metric-card"><div class="metric-label">Prompt Processed</div><div class="metric-value prompt" id="u-prompt">—</div><div class="metric-sub">excluding cache reuse</div></div>
+                <div class="metric-card"><div class="metric-label">Prompt Reused</div><div class="metric-value ctx" id="u-cache">—</div><div class="metric-sub" id="u-cache-ratio">—</div></div>
+                <div class="metric-card"><div class="metric-label">Total Prompt</div><div class="metric-value prompt" id="u-total">—</div><div class="metric-sub">processed + reused</div></div>
                 <div class="metric-card"><div class="metric-label">Generated</div><div class="metric-value gen" id="u-gen">—</div></div>
-                <div class="metric-card"><div class="metric-label">Cache hits</div><div class="metric-value ctx" id="u-cache">—</div><div class="metric-sub" id="u-cache-ratio">—</div></div>
-                <div class="metric-card"><div class="metric-label">Saved vs Luna</div><div class="metric-value amber" id="u-luna">—</div><div class="metric-sub">GPT-5.6 Luna</div></div>
-                <div class="metric-card"><div class="metric-label">Saved vs Qwen API</div><div class="metric-value amber" id="u-qwen">—</div><div class="metric-sub">Qwen3.8-27B Alibaba</div></div>
+                <div class="metric-card"><div class="metric-label">Saved vs Luna</div><div class="metric-value amber" id="u-luna">—</div><div class="metric-sub">GPT-5.6 Luna API cost</div></div>
+                <div class="metric-card"><div class="metric-label">Saved vs Qwen API</div><div class="metric-value amber" id="u-qwen">—</div><div class="metric-sub">Qwen3.8-27B Singapore API cost</div></div>
                 <details class="metric-card energy-card" id="energy-card">
                     <summary>
                         <div class="metric-label">GPU Energy Cost</div>
