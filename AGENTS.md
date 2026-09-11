@@ -29,7 +29,7 @@ src/
   main.rs              wiring: CLI -> AppState, GPU poller thread, llama poller task, warp server
   cli.rs / config.rs   clap args -> resolved AppConfig
   state.rs             AppState: all shared state in Arc<Mutex<...>>
-  gpu/                 GpuBackend trait + rocm.rs (rocm-smi JSON), nvidia.rs (nvidia-smi CSV),
+  gpu/                 GpuBackend trait + amdgpu.rs (AMD sysfs), rocm.rs (rocm-smi JSON), nvidia.rs (nvidia-smi CSV),
                        env.rs (arch table + auto-detect), dummy.rs (no-op), MultiBackend (mix of vendors)
   llama/               server.rs (subprocess start/stop), metrics.rs (Prometheus parser),
                        poller.rs (async /health, /metrics, /slots polling)
@@ -55,8 +55,8 @@ Data flow: GPU poller (500 ms, OS thread) and llama poller (1 s, tokio task) wri
   `tokio::sync::Mutex` for the child process). Do not introduce new global state; add fields to
   `AppState`. Keep lock scopes small; the GPU poller runs on a plain thread.
 - **GPU tool output parsing is fixture-driven.** `tests/fixtures/` contains real samples of
-  `rocm-smi` JSON, `nvidia-smi` CSV, and Prometheus text format. Parsers (`gpu/rocm.rs`,
-  `gpu/nvidia.rs`, `llama/metrics.rs`) must stay tolerant of new fields; add fixtures when
+  `rocm-smi` JSON, `nvidia-smi` CSV, AMDGPU sysfs trees, and Prometheus text format. Parsers (`gpu/rocm.rs`,
+  `gpu/nvidia.rs`, `gpu/amdgpu.rs`, `llama/metrics.rs`) must stay tolerant of new fields; add fixtures when
   changing parsing logic.
 - **Config precedence:** CLI flags < persisted UI settings (`~/.config/llama-monitor/`) —
   `ui-settings.json`, `gpu-env.json`, `presets.json`, `usage-stats.json`. Writes are atomic (tmp file + rename);
@@ -68,7 +68,8 @@ Data flow: GPU poller (500 ms, OS thread) and llama poller (1 s, tokio task) wri
 - **Cross-platform target: Linux + macOS** (x86_64 and aarch64, see release workflow).
   Avoid Linux-only syscalls; `which` is used for command detection.
 - **External binaries are optional.** The app must start and run fine when `llama-server`,
-  `rocm-smi`, or `nvidia-smi` are missing (dummy GPU backend, logged warnings).
+  `rocm-smi`, or `nvidia-smi` are missing (AMDGPU sysfs telemetry still works on AMD;
+  otherwise dummy GPU backend, logged warnings).
 - **API changes** require updating both `src/web/api.rs` and the corresponding calls in
   `static/app.js` (and `README.md` API table).
 - Code style: rustfmt defaults, `anyhow::Result` for error handling, English comments.

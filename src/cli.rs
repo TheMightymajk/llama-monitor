@@ -31,7 +31,7 @@ pub struct AppArgs {
     #[arg(long)]
     pub presets_file: Option<PathBuf>,
 
-    /// GPU monitoring backend: auto (all detected vendors), rocm, nvidia, none
+    /// GPU monitoring backend: auto, amdgpu (AMD sysfs; Vulkan compatible), rocm, nvidia, none
     #[arg(long, default_value = "auto")]
     pub gpu_backend: String,
 

@@ -227,9 +227,28 @@ pub fn detect_nvidia_gpus() -> Option<DetectedGpu> {
     })
 }
 
-/// Detect GPUs (try ROCm first, then NVIDIA).
+/// Detect GPUs (try ROCm first, then NVIDIA, then AMDGPU sysfs).
 pub fn detect_gpus() -> Option<DetectedGpu> {
-    detect_rocm_gpus().or_else(detect_nvidia_gpus)
+    detect_rocm_gpus()
+        .or_else(detect_nvidia_gpus)
+        .or_else(detect_amdgpu_gpus)
+}
+
+/// Detect AMD GPUs from sysfs (Vulkan/RADV; no rocminfo required).
+pub fn detect_amdgpu_gpus() -> Option<DetectedGpu> {
+    detect_amdgpu_gpus_in(Path::new("/sys"))
+}
+
+pub fn detect_amdgpu_gpus_in(sysfs_root: &Path) -> Option<DetectedGpu> {
+    let devices = crate::gpu::amdgpu::discover_amd_gpus(sysfs_root);
+    if devices.is_empty() {
+        return None;
+    }
+    Some(DetectedGpu {
+        arch: "amdgpu".into(),
+        count: devices.len(),
+        names: devices.into_iter().map(|d| d.display_name).collect(),
+    })
 }
 
 /// Generate a device list string like "0,1,2,3" for N devices.
@@ -438,5 +457,21 @@ Agent 4
         assert_eq!(loaded.devices, "0,1");
         assert_eq!(loaded.extra_env.len(), 1);
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn detect_amdgpu_sysfs_without_rocminfo() {
+        let root =
+            std::env::temp_dir().join(format!("llama-monitor-env-amdgpu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let device = root.join("class/drm/card0/device");
+        std::fs::create_dir_all(&device).unwrap();
+        std::fs::write(device.join("vendor"), "0x1002\n").unwrap();
+        std::fs::write(device.join("product_name"), "AMD Radeon AI PRO R9700\n").unwrap();
+        let detected = detect_amdgpu_gpus_in(&root).unwrap();
+        assert_eq!(detected.arch, "amdgpu");
+        assert_eq!(detected.count, 1);
+        assert!(detected.names[0].contains("R9700"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -102,6 +102,8 @@ pub struct AppState {
     pub ui_settings_path: PathBuf,
     pub usage: Arc<Mutex<UsageStats>>,
     pub usage_path: PathBuf,
+    /// Canonical telemetry backend name (`amdgpu`, `rocm`, `nvidia`, `none`, `multi`).
+    pub gpu_telemetry_backend: Arc<Mutex<String>>,
 }
 
 impl AppState {
@@ -169,6 +171,7 @@ impl AppState {
             ui_settings_path,
             usage: Arc::new(Mutex::new(usage)),
             usage_path,
+            gpu_telemetry_backend: Arc::new(Mutex::new("none".into())),
         }
     }
 
@@ -185,10 +188,12 @@ impl AppState {
                 let _ = usage.maybe_save(&self.usage_path, false);
             }
         }
-        // Do not mix managed stdout into the buffer when an external file is configured.
+        // External file follow is the live-speed source when configured; do not
+        // also parse managed stdout (the same lines would be applied twice).
         if self.using_external_logs() {
             return;
         }
+        self.llama_metrics.lock().unwrap().apply_log_line(&line);
         let mut logs = self.log_buffer.lock().unwrap();
         logs.push_line(line);
         let mut src = self.log_source.lock().unwrap();

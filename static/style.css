@@ -204,6 +204,7 @@ h2 { font-size: 0.82rem; font-weight: 650; color: var(--text-dim); text-transfor
 .gpu-table tr:last-child td { border-bottom: none; }
 .gpu-table tbody tr:hover td { background: rgba(255, 255, 255, 0.03); }
 .value { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.gpu-table td.temp { white-space: normal; font-size: 0.75rem; }
 .card { font-weight: 600; color: var(--text); }
 .temp { color: var(--amber); }
 .load { color: var(--gen); }

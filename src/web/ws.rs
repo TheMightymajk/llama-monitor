@@ -25,7 +25,11 @@ pub fn ws_route(
                         interval.tick().await;
                         let json = {
                             let gpu = state.gpu_metrics.lock().unwrap().clone();
-                            let llama = state.llama_metrics.lock().unwrap().clone();
+                            let llama = {
+                                let mut llama = state.llama_metrics.lock().unwrap();
+                                llama.refresh_live();
+                                llama.clone()
+                            };
                             let logs = state.log_buffer.lock().unwrap().snapshot();
                             let log_source = state.log_source.lock().unwrap().clone();
                             let running = *state.server_running.lock().unwrap();
@@ -37,6 +41,8 @@ pub fn ws_route(
                                 .lock()
                                 .unwrap()
                                 .snapshot(std::time::Instant::now(), chrono::Local::now());
+                            let telemetry_backend =
+                                state.gpu_telemetry_backend.lock().unwrap().clone();
                             build_ws_payload(
                                 &gpu,
                                 &llama,
@@ -47,6 +53,7 @@ pub fn ws_route(
                                 &usage,
                                 &running_model,
                                 &energy,
+                                &telemetry_backend,
                             )
                             .to_string()
                         };
@@ -74,6 +81,7 @@ pub fn build_ws_payload(
     usage: &crate::usage::UsageSnapshot,
     running_model: &crate::llama::running_model::RunningModelInfo,
     energy: &crate::energy::EnergySnapshot,
+    telemetry_backend: &str,
 ) -> serde_json::Value {
     serde_json::json!({
         "gpu": gpu,
@@ -85,6 +93,7 @@ pub fn build_ws_payload(
         "usage": usage,
         "running_model": running_model,
         "energy": energy,
+        "telemetry_backend": telemetry_backend,
     })
 }
 
@@ -119,6 +128,7 @@ mod tests {
             &empty_usage(),
             &empty_running_model(),
             &empty_energy(),
+            "none",
         );
         assert_eq!(payload["server_running"], true);
         assert_eq!(payload["server_started_at"], 1_700_000_000);
@@ -127,6 +137,7 @@ mod tests {
         assert_eq!(payload["running_model"]["detected"], false);
         assert_eq!(payload["energy"]["currency"], "PLN");
         assert_eq!(payload["energy"]["available"], false);
+        assert_eq!(payload["telemetry_backend"], "none");
         assert!(payload["gpu"].is_null());
         assert!(payload["llama"]["prompt_tokens_per_sec"].is_null());
         assert!(payload["llama"]["kv_cache_tokens"].is_null());
@@ -146,6 +157,7 @@ mod tests {
             &empty_usage(),
             &empty_running_model(),
             &empty_energy(),
+            "none",
         );
         assert_eq!(payload["server_running"], false);
         assert!(payload["server_started_at"].is_null());
@@ -179,6 +191,7 @@ mod tests {
             &snap,
             &empty_running_model(),
             &empty_energy(),
+            "none",
         );
         assert_eq!(payload["usage"]["prompt_tokens"], 251_342);
         assert_eq!(payload["usage"]["cached_tokens"], 4_657_250);
@@ -193,9 +206,40 @@ mod tests {
         assert_eq!(payload["llama"]["spec_accepted_tokens"], 31_710);
         assert_eq!(payload["llama"]["spec_draft_tokens"], 40_018);
         assert!(payload["llama"]["spec_acceptance_ratio"].as_f64().unwrap() > 0.79);
-        assert_eq!(payload["llama"]["prompt_tokens_per_sec"], 0.0);
-        assert_eq!(payload["llama"]["inference_phase"], "idle");
+        assert!(payload["llama"]["prompt_tokens_per_sec"].is_null());
+        assert!(payload["llama"]["inference_phase"].is_null());
         assert!(payload["llama"]["kv_cache_tokens"].is_null());
+    }
+
+    #[test]
+    fn ws_payload_exposes_log_generation_speed() {
+        let mut llama = LlamaMetrics::default();
+        llama.apply_log_line(
+            "slot print_timing: id 1 | task 916 | n_gen = 276, tg = 28.66 t/s, tg_3s = 30.85 t/s",
+        );
+        let payload = build_ws_payload(
+            &None,
+            &llama,
+            &[],
+            &LogSourceInfo::default(),
+            true,
+            Some(1),
+            &empty_usage(),
+            &empty_running_model(),
+            &empty_energy(),
+            "none",
+        );
+        assert_eq!(payload["llama"]["inference_phase"], "generation");
+        assert_eq!(payload["llama"]["generation_speed_kind"], "live");
+        assert!(
+            (payload["llama"]["generation_tokens_per_sec"]
+                .as_f64()
+                .unwrap()
+                - 30.85)
+                .abs()
+                < 1e-9
+        );
+        assert_ne!(payload["llama"]["generation_tokens_per_sec"], 0.0);
     }
 
     #[test]
@@ -231,6 +275,7 @@ llamacpp:spec_decode_num_drafts_total 4294967296
             &snap,
             &empty_running_model(),
             &empty_energy(),
+            "none",
         );
         assert_eq!(
             payload["usage"]["prompt_tokens"].as_u64(),

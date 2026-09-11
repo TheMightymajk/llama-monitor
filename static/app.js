@@ -194,7 +194,7 @@ async function loadGpuEnv() {
             infoEl.textContent = 'Detected: ' + detected.count + 'x ' + detected.arch + ' (' + detected.names.join(', ') + ')';
             summaryInfo.textContent = '\u2014 ' + detected.count + 'x ' + detected.arch;
         } else {
-            infoEl.textContent = 'No GPU detected via rocminfo/nvidia-smi';
+            infoEl.textContent = 'No GPU detected via rocminfo / nvidia-smi / AMDGPU sysfs';
             summaryInfo.textContent = '';
         }
     } catch (err) {
@@ -794,6 +794,13 @@ function setWsStatus(connected) {
     text('ws-text', connected ? 'WebSocket' : 'WebSocket down');
 }
 
+function gpuCardTemp(c) {
+    const extras = [c.temp_junction, c.temp_edge, c.temp_memory, c.temp]
+        .filter((t) => t != null && !Number.isNaN(Number(t)))
+        .map(Number);
+    return extras.length ? Math.max(...extras) : 0;
+}
+
 function gpuSummary(gpu) {
     if (gpu == null) {
         return { util: null, vramUsed: 0, vramTotal: 0, temp: null, unavailable: true };
@@ -806,10 +813,35 @@ function gpuSummary(gpu) {
     for (const c of cards) {
         vramUsed += c.vram_used || 0;
         vramTotal += c.vram_total || 0;
-        temp = Math.max(temp, c.temp || 0);
+        temp = Math.max(temp, gpuCardTemp(c));
         load = Math.max(load, c.load || 0);
     }
     return { util: load, vramUsed, vramTotal, temp, unavailable: false };
+}
+
+function formatGpuTemps(m) {
+    const parts = [];
+    if (m.temp_junction != null) parts.push(Math.round(m.temp_junction) + 'C junc');
+    if (m.temp_edge != null) parts.push(Math.round(m.temp_edge) + 'C edge');
+    if (m.temp_memory != null) parts.push(Math.round(m.temp_memory) + 'C mem');
+    if (parts.length) return parts.join(' · ');
+    return Math.round(m.temp || 0) + 'C';
+}
+
+function formatGpuName(card, m) {
+    const fan = [];
+    if (m.fan_rpm != null) fan.push(m.fan_rpm + ' RPM');
+    if (m.fan_percent != null) fan.push(m.fan_percent + '% fan');
+    return fan.length ? card + ' · ' + fan.join(' / ') : card;
+}
+
+function telemetryBackendLabel(id) {
+    if (id === 'amdgpu') return 'AMDGPU / sysfs';
+    if (id === 'rocm') return 'ROCm';
+    if (id === 'nvidia') return 'NVIDIA';
+    if (id === 'multi') return 'multi';
+    if (id === 'none') return 'none';
+    return id || '';
 }
 
 function fmtMib(mib) {
@@ -992,6 +1024,12 @@ async function resetEnergy() {
     }
 }
 
+function speedKindLabel(kind, liveLabel) {
+    if (kind === 'live') return liveLabel;
+    if (kind === 'last') return 'last';
+    return '—';
+}
+
 function fmtLiveTps(v) {
     if (v == null || Number.isNaN(Number(v))) return '—';
     return Number(v).toFixed(1) + ' t/s';
@@ -1017,14 +1055,8 @@ function applyWsPayload(d) {
     text('m-gen', fmtLiveTps(l.generation_tokens_per_sec));
     text('hero-prompt', fmtLiveTpsHero(l.prompt_tokens_per_sec));
     text('hero-gen', fmtLiveTpsHero(l.generation_tokens_per_sec));
-    const phase = l.inference_phase;
-    if (phase == null) {
-        text('m-prompt-sub', '—');
-        text('m-gen-sub', '—');
-    } else {
-        text('m-prompt-sub', phase === 'prefill' ? 'prefill' : 'idle');
-        text('m-gen-sub', phase === 'generating' ? 'generating' : 'idle');
-    }
+    text('m-prompt-sub', speedKindLabel(l.prompt_speed_kind, 'prefill'));
+    text('m-gen-sub', speedKindLabel(l.generation_speed_kind, 'generation'));
     if (l.kv_cache_tokens != null && l.kv_cache_max != null) {
         const pct = l.kv_cache_max > 0
             ? ((l.kv_cache_tokens / l.kv_cache_max) * 100).toFixed(1)
@@ -1078,20 +1110,33 @@ function applyWsPayload(d) {
 
     const summary = gpuSummary(d.gpu);
     const gpuEmpty = $('gpu-empty');
+    const backendLabel = telemetryBackendLabel(d.telemetry_backend);
+    const backendEl = $('gpu-backend-label');
+    const backendDetail = $('gpu-backend-detail');
+    if (backendEl) backendEl.textContent = backendLabel ? '— ' + backendLabel : '';
+    if (backendDetail) {
+        if (d.telemetry_backend === 'amdgpu') {
+            backendDetail.hidden = false;
+            backendDetail.textContent = 'Telemetry backend: AMDGPU/sysfs';
+        } else {
+            backendDetail.hidden = true;
+            backendDetail.textContent = '';
+        }
+    }
     if (summary.unavailable) {
         text('hero-gpu', '—');
         text('hero-vram', '—');
         text('hero-vram-sub', 'GPU memory');
         text('hero-temp', '—');
         gpuEmpty.style.display = '';
-        gpuEmpty.textContent = 'GPU metrics unavailable (rocm-smi / nvidia-smi failed).';
+        gpuEmpty.textContent = 'GPU metrics unavailable (telemetry backend failed).';
     } else if (summary.util == null) {
         text('hero-gpu', '—');
         text('hero-vram', '—');
         text('hero-vram-sub', 'GPU memory');
         text('hero-temp', '—');
         gpuEmpty.style.display = '';
-        gpuEmpty.textContent = 'No GPU metrics on this machine. AMD R9700 / ROCm data appears when amd-smi or rocm-smi is available.';
+        gpuEmpty.textContent = 'No GPU metrics on this machine. AMDGPU sysfs (Vulkan compatible), rocm-smi, or nvidia-smi data appears when a telemetry backend is available.';
     } else {
         text('hero-gpu', summary.util + '%');
         const vpct = summary.vramTotal > 0 ? Math.round((summary.vramUsed / summary.vramTotal) * 100) : 0;
@@ -1119,8 +1164,8 @@ function applyWsPayload(d) {
         }
         const tr = document.createElement('tr');
         const cells = [
-            ['card value', card, null],
-            ['value temp', Math.round(m.temp) + 'C', null],
+            ['card value', formatGpuName(card, m), card],
+            ['value temp', formatGpuTemps(m), formatGpuTemps(m)],
             ['value load', m.load + '%', null],
             ['value vram', vpct + '%', null],
             [capped ? 'value capped' : 'value power', powerText, powerTitle],
@@ -1141,19 +1186,19 @@ function applyWsPayload(d) {
 
     const badgeParts = [];
     if (serverRunning) badgeParts.push('Running');
-    if (l.inference_phase === 'prefill') {
+    if (l.inference_phase === 'prefill' && l.prompt_speed_kind === 'live') {
         badgeParts.push('prefill');
         if (l.prompt_tokens_per_sec != null && l.prompt_tokens_per_sec > 0) {
             badgeParts.push(l.prompt_tokens_per_sec.toFixed(1) + 't/s');
         }
-    } else if (l.inference_phase === 'generating') {
-        badgeParts.push('generating');
+    } else if (l.inference_phase === 'generation' && l.generation_speed_kind === 'live') {
+        badgeParts.push('generation');
         if (l.generation_tokens_per_sec != null && l.generation_tokens_per_sec > 0) {
             badgeParts.push(l.generation_tokens_per_sec.toFixed(1) + 't/s');
         }
     }
     const gpuEntries = Object.entries(d.gpu || {});
-    if (gpuEntries.length > 0) badgeParts.push(Math.max(...gpuEntries.map(([, m]) => m.temp)).toFixed(0) + 'C');
+    if (gpuEntries.length > 0) badgeParts.push(Math.max(...gpuEntries.map(([, m]) => gpuCardTemp(m))).toFixed(0) + 'C');
     text('badge-server', badgeParts.length ? ' ' + badgeParts.join(' · ') : ' Stopped');
     text('badge-chat', chatHistory.length > 0 ? ' ' + chatHistory.length + ' msg' : '');
     refreshModelCard();

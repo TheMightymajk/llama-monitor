@@ -49,6 +49,7 @@ pub async fn external_log_poller(state: AppState) {
                         let _ = usage.maybe_save(&state.usage_path, false);
                     }
                 }
+                state.llama_metrics.lock().unwrap().apply_log_line(line);
             }
             let line_count = state.log_buffer.lock().unwrap().len();
             let mut src = state.log_source.lock().unwrap();

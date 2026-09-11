@@ -108,7 +108,8 @@ pub async fn start_server(
                 cmd.env(key, val);
             }
         }
-        "none" => {}
+        // amdgpu/vulkan are telemetry backends; do not inject ROCm into llama-server.
+        "none" | "amdgpu" | "vulkan" => {}
         _ => {
             for (key, val) in build_rocm_env(&gpu_env, &cwd) {
                 cmd.env(key, val);

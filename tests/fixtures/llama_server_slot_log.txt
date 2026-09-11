@@ -1,0 +1,11 @@
+slot print_timing: id 1 | task 421 | prompt processing, n_tokens =    512, progress = 0.50, t =   0.85 s / 602.15 tokens per second
+slot print_timing: id 1 | task 916 | n_gen = 100, tg = 27.73 t/s, tg_3s = 28.01 t/s
+slot print_timing: id 1 | task 916 | n_gen = 276, tg = 28.66 t/s, tg_3s = 30.85 t/s
+slot print_timing: id 1 | task 916 | n_gen = 988, tg = 29.22 t/s, tg_3s = 31.01 t/s
+slot print_timing: id 1 | task 916 |          eval time =   3378.12 ms /   988 tokens (    3.42 ms per token,    29.24 tokens per second)
+slot print_timing: id 1 | task 916 | stop processing: n_tokens = 2048, truncated = 0
+3.09.176.889 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   2048, progress = 0.08, t =  13.50 s / 151.71 tokens per second
+3.11.14.454 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  11.44 t/s, tg_3s =  11.44 t/s
+slot print_timing: id  0 | task 0 | prompt eval time =    1426.45 ms /  2231 tokens (    0.64 ms per token,  1564.02 tokens per second)
+slot print_timing: id  0 | task 0 |          eval time =    8912.00 ms /  1024 tokens (    8.70 ms per token,   114.94 tokens per second)
+slot launch_slot_: id 1 | task 1001 | processing task, is_child = 0

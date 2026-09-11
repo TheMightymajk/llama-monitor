@@ -114,6 +114,7 @@ async fn main() -> Result<()> {
         local_now.date_naive()
     );
 
+    let gpu_devices = gpu_env.devices.clone();
     let state = state::AppState::new(
         initial_presets,
         app_config.presets_file.clone(),
@@ -136,7 +137,9 @@ async fn main() -> Result<()> {
     }
 
     // Detect and start GPU poller
-    let backend = gpu::detect_backend(&app_config.gpu_backend);
+    let backend = gpu::detect_backend(&app_config.gpu_backend, &gpu_devices);
+    println!("[info] GPU telemetry backend: {}", backend.name());
+    *state.gpu_telemetry_backend.lock().unwrap() = backend.name().to_string();
     let ingest_enabled = Arc::new(AtomicBool::new(true));
     {
         let gpu = state.gpu_metrics.clone();
@@ -146,6 +149,7 @@ async fn main() -> Result<()> {
         let ingest_enabled = ingest_enabled.clone();
         thread::spawn(move || {
             // Runtime lock order: gpu_metrics -> llama_metrics/health -> energy.
+            let mut err_log = gpu::RepeatErrorLimiter::new(Duration::from_secs(30));
             loop {
                 if !ingest_enabled.load(Ordering::SeqCst) {
                     thread::sleep(GPU_POLL_INTERVAL);
@@ -179,7 +183,12 @@ async fn main() -> Result<()> {
                             chrono::Local::now(),
                         );
                     }
-                    Err(e) => eprintln!("[error] GPU metrics: {e}"),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if err_log.should_log(&msg, Instant::now()) {
+                            eprintln!("[error] GPU metrics: {msg}");
+                        }
+                    }
                 }
                 thread::sleep(GPU_POLL_INTERVAL);
             }

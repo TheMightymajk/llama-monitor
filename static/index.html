@@ -122,8 +122,8 @@
         <section class="panel">
             <h2>Inference</h2>
             <div class="inference-panel" id="inference">
-                <div class="metric-card"><div class="metric-label">Prompt Speed</div><div class="metric-value prompt" id="m-prompt">—</div><div class="metric-sub" id="m-prompt-sub">live</div></div>
-                <div class="metric-card"><div class="metric-label">Generation Speed</div><div class="metric-value gen" id="m-gen">—</div><div class="metric-sub" id="m-gen-sub">live</div></div>
+                <div class="metric-card"><div class="metric-label">Prompt Speed</div><div class="metric-value prompt" id="m-prompt">—</div><div class="metric-sub" id="m-prompt-sub">—</div></div>
+                <div class="metric-card"><div class="metric-label">Generation Speed</div><div class="metric-value gen" id="m-gen">—</div><div class="metric-sub" id="m-gen-sub">—</div></div>
                 <div class="metric-card"><div class="metric-label">Context (KV Cache)</div><div class="metric-value ctx" id="m-ctx">—</div></div>
                 <div class="metric-card"><div class="metric-label">Peak Context</div><div class="metric-value ctx" id="m-peak">—</div><div class="metric-sub" id="m-peak-sub">lifetime high-water</div></div>
                 <div class="metric-card"><div class="metric-label">MTP Acceptance</div><div class="metric-value gen" id="m-mtp">—</div><div class="metric-sub" id="m-mtp-sub">lifetime speculative decode</div></div>
@@ -172,11 +172,12 @@
         </section>
 
         <section class="panel">
-            <h2>GPUs</h2>
+            <h2>GPUs <span id="gpu-backend-label" class="summary-aside"></span></h2>
+            <p class="hint-text" id="gpu-backend-detail" hidden></p>
             <div class="table-wrap">
             <table class="gpu-table">
                 <colgroup>
-                    <col style="width:22%"><col style="width:10%"><col style="width:10%"><col style="width:14%"><col style="width:18%"><col style="width:13%"><col style="width:13%">
+                    <col style="width:26%"><col style="width:22%"><col style="width:8%"><col style="width:10%"><col style="width:16%"><col style="width:9%"><col style="width:9%">
                 </colgroup>
                 <thead><tr>
                     <th>GPU</th><th>Temp</th><th>Load</th><th>VRAM</th><th>Power</th><th>SCLK</th><th>MCLK</th>
@@ -184,7 +185,7 @@
                 <tbody id="gpu-rows"></tbody>
             </table>
             </div>
-            <p class="empty-hint" id="gpu-empty">No GPU metrics on this machine. AMD R9700 / ROCm data appears when amd-smi or rocm-smi is available.</p>
+            <p class="empty-hint" id="gpu-empty">No GPU metrics on this machine. AMDGPU sysfs (Vulkan compatible), rocm-smi, or nvidia-smi data appears when a telemetry backend is available.</p>
         </section>
     </div>
 

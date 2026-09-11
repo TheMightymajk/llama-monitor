@@ -6,8 +6,14 @@ pub struct LlamaMetrics {
     pub prompt_tokens_per_sec: Option<f64>,
     /// Instantaneous generation t/s (`None` = unavailable).
     pub generation_tokens_per_sec: Option<f64>,
-    /// Runtime phase from process-counter deltas (`None` = unavailable).
-    pub inference_phase: Option<super::throughput::InferencePhase>,
+    /// Runtime phase from llama.cpp log lines (`None` = no log evidence yet).
+    pub inference_phase: Option<super::live_slots::InferencePhase>,
+    /// Whether the prompt tile is a live prefill reading or a retained last value.
+    pub prompt_speed_kind: Option<super::live_slots::SpeedKind>,
+    /// Whether the generation tile is a live `tg_3s` reading or a retained last value.
+    pub generation_speed_kind: Option<super::live_slots::SpeedKind>,
+    /// Whole-generation average `tg` from the log (not the live gauge).
+    pub generation_tokens_per_sec_avg: Option<f64>,
     /// llama-server session counters from the last successful `/metrics` scrape.
     pub prompt_tokens_total: u64,
     pub predicted_tokens_total: u64,
@@ -26,7 +32,7 @@ pub struct LlamaMetrics {
     pub n_busy_slots_per_decode: Option<f64>,
     pub status: String,
     #[serde(skip)]
-    throughput: super::throughput::LiveThroughputTracker,
+    live_slots: super::live_slots::LiveSlotTracker,
 }
 
 impl LlamaMetrics {
@@ -36,12 +42,6 @@ impl LlamaMetrics {
     }
 
     pub fn apply_metrics_at(&mut self, prom: &PrometheusValues, now: std::time::Instant) {
-        let view = self
-            .throughput
-            .observe(&super::throughput::ThroughputSample::from(prom), now);
-        self.prompt_tokens_per_sec = Some(view.prompt_tokens_per_sec);
-        self.generation_tokens_per_sec = Some(view.generation_tokens_per_sec);
-        self.inference_phase = Some(view.phase);
         self.prompt_tokens_total = prom.prompt_tokens_total;
         self.predicted_tokens_total = prom.predicted_tokens_total;
         self.requests_processing = Some(prom.requests_processing);
@@ -51,14 +51,41 @@ impl LlamaMetrics {
         self.spec_drafts = prom.spec_decode_num_drafts_total;
         self.spec_acceptance_ratio = prom.speculative_acceptance_ratio();
         self.n_busy_slots_per_decode = prom.n_busy_slots_per_decode;
+        // `/metrics` gauges are not authoritative for live UI speed.
+        self.publish_live_from_logs(now);
     }
 
-    /// `/metrics` failed this cycle: live gauges become unavailable.
-    /// Session counters are left as last-known (counter semantics).
+    pub fn apply_log_line(&mut self, line: &str) {
+        self.apply_log_line_at(line, std::time::Instant::now());
+    }
+
+    pub fn apply_log_line_at(&mut self, line: &str, now: std::time::Instant) {
+        if self.live_slots.apply_line(line, now) {
+            self.publish_live_from_logs(now);
+        }
+    }
+
+    /// Recompute live vs last from timestamps (stale `tg_3s` must not stay live).
+    pub fn refresh_live(&mut self) {
+        self.publish_live_from_logs(std::time::Instant::now());
+    }
+
+    fn publish_live_from_logs(&mut self, now: std::time::Instant) {
+        if self.live_slots.is_empty() {
+            return;
+        }
+        let view = self.live_slots.dashboard(now);
+        self.prompt_tokens_per_sec = view.prompt_tokens_per_sec;
+        self.generation_tokens_per_sec = view.generation_tokens_per_sec;
+        self.generation_tokens_per_sec_avg = view.generation_tokens_per_sec_avg;
+        self.inference_phase = Some(view.phase);
+        self.prompt_speed_kind = view.prompt_speed_kind;
+        self.generation_speed_kind = view.generation_speed_kind;
+    }
+
+    /// `/metrics` failed this cycle: occupancy gauges become unavailable.
+    /// Log-derived live/last speeds are kept.
     pub fn clear_metrics_gauges(&mut self) {
-        self.prompt_tokens_per_sec = None;
-        self.generation_tokens_per_sec = None;
-        self.inference_phase = None;
         self.requests_processing = None;
     }
 
@@ -433,37 +460,34 @@ mod tests {
     }
 
     #[test]
-    fn live_prompt_speed_zero_is_not_lifetime_average() {
+    fn live_prompt_speed_metrics_zero_is_not_lifetime_average() {
         let t0 = std::time::Instant::now();
         let mut m = LlamaMetrics::default();
         m.apply_metrics_at(&idle_prom(), t0);
-        assert_eq!(m.prompt_tokens_per_sec, Some(0.0));
-        assert_eq!(
-            m.inference_phase,
-            Some(crate::llama::throughput::InferencePhase::Idle)
-        );
+        assert_eq!(m.prompt_tokens_per_sec, None);
+        assert_eq!(m.inference_phase, None);
         let lifetime = 10_000.0 / 8.1;
-        assert!((m.prompt_tokens_per_sec.unwrap() - lifetime).abs() > 1.0);
+        assert!(lifetime > 1.0);
     }
 
     #[test]
-    fn live_generation_speed_zero_is_not_lifetime_average() {
+    fn live_generation_speed_metrics_zero_is_not_lifetime_average() {
         let t0 = std::time::Instant::now();
         let mut m = LlamaMetrics::default();
         m.apply_metrics_at(&idle_prom(), t0);
-        assert_eq!(m.generation_tokens_per_sec, Some(0.0));
+        assert_eq!(m.generation_tokens_per_sec, None);
         let lifetime = 5_000.0 / 88.2;
-        assert!((m.generation_tokens_per_sec.unwrap() - lifetime).abs() > 1.0);
+        assert!(lifetime > 1.0);
     }
 
     #[test]
-    fn live_zero_serializes_as_zero_not_null() {
+    fn missing_log_speeds_serialize_as_null() {
         let mut m = LlamaMetrics::default();
         m.apply_metrics(&idle_prom());
         let v = serde_json::to_value(&m).unwrap();
-        assert_eq!(v["prompt_tokens_per_sec"], 0.0);
-        assert_eq!(v["generation_tokens_per_sec"], 0.0);
-        assert_eq!(v["inference_phase"], "idle");
+        assert!(v["prompt_tokens_per_sec"].is_null());
+        assert!(v["generation_tokens_per_sec"].is_null());
+        assert!(v["inference_phase"].is_null());
         m.clear_metrics_gauges();
         let v = serde_json::to_value(&m).unwrap();
         assert!(v["prompt_tokens_per_sec"].is_null());
@@ -472,24 +496,26 @@ mod tests {
     }
 
     #[test]
-    fn metrics_failure_clears_live_speed_and_phase() {
+    fn metrics_failure_keeps_session_counters() {
         let mut m = LlamaMetrics::default();
         m.apply_metrics(&sample_prom(42.0, 18.0));
         assert_eq!(m.prompt_tokens_total, 10_000);
         assert_eq!(m.predicted_tokens_total, 5_000);
         m.clear_metrics_gauges();
-        assert_eq!(m.prompt_tokens_per_sec, None);
-        assert_eq!(m.generation_tokens_per_sec, None);
-        assert_eq!(m.inference_phase, None);
         assert_eq!(m.requests_processing, None);
         assert_eq!(m.prompt_tokens_total, 10_000);
         assert_eq!(m.predicted_tokens_total, 5_000);
     }
 
     #[test]
-    fn slots_failure_clears_live_kv_not_speed() {
+    fn slots_failure_clears_live_kv_not_log_speed() {
+        let t0 = std::time::Instant::now();
         let mut m = LlamaMetrics::default();
-        m.apply_metrics(&sample_prom(12.0, 8.0));
+        m.apply_log_line_at(
+            "slot print_timing: id 1 | task 916 | n_gen = 276, tg = 28.66 t/s, tg_3s = 30.85 t/s",
+            t0,
+        );
+        m.apply_metrics_at(&sample_prom(12.0, 8.0), t0);
         m.apply_slots(&[serde_json::json!({
             "id": 0,
             "n_ctx": 8192,
@@ -497,19 +523,63 @@ mod tests {
             "is_processing": true
         })]);
         assert_eq!(m.kv_cache_tokens, Some(4096));
-        assert_eq!(m.kv_cache_max, Some(8192));
-        assert_eq!(m.slots_processing, Some(1));
         m.clear_slots_gauges();
         assert_eq!(m.kv_cache_tokens, None);
         assert_eq!(m.kv_cache_max, None);
-        assert_eq!(m.slots_idle, None);
-        assert_eq!(m.slots_processing, None);
         assert_eq!(
             m.inference_phase,
-            Some(crate::llama::throughput::InferencePhase::Generating)
+            Some(crate::llama::live_slots::InferencePhase::Generation)
         );
-        assert_eq!(m.prompt_tokens_per_sec, Some(0.0));
-        assert_eq!(m.generation_tokens_per_sec, Some(8.0));
+        assert!((m.generation_tokens_per_sec.unwrap() - 30.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn metrics_predicted_zero_does_not_override_log_tg_3s() {
+        let t0 = std::time::Instant::now();
+        let mut m = LlamaMetrics::default();
+        m.apply_log_line_at(
+            "slot print_timing: id 1 | task 916 | n_gen = 276, tg = 28.66 t/s, tg_3s = 30.85 t/s",
+            t0,
+        );
+        let mut prom = sample_prom(0.0, 0.0);
+        prom.predicted_tokens_per_sec = 0.0;
+        m.apply_metrics_at(&prom, t0 + std::time::Duration::from_millis(200));
+        assert_eq!(
+            m.inference_phase,
+            Some(crate::llama::live_slots::InferencePhase::Generation)
+        );
+        assert!((m.generation_tokens_per_sec.unwrap() - 30.85).abs() < 1e-9);
+        assert_eq!(
+            m.generation_speed_kind,
+            Some(crate::llama::live_slots::SpeedKind::Live)
+        );
+        let json = serde_json::to_value(&m).unwrap();
+        assert!((json["generation_tokens_per_sec"].as_f64().unwrap() - 30.85).abs() < 1e-9);
+        assert_eq!(json["inference_phase"], "generation");
+    }
+
+    #[test]
+    fn stale_log_speed_stays_numeric_last_not_metrics_zero() {
+        let t0 = std::time::Instant::now();
+        let mut m = LlamaMetrics::default();
+        m.apply_log_line_at(
+            "slot print_timing: id 1 | task 916 | n_gen = 276, tg = 28.66 t/s, tg_3s = 30.85 t/s",
+            t0,
+        );
+        m.apply_metrics_at(
+            &idle_prom(),
+            t0 + crate::llama::live_slots::LIVE_STALE + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            m.inference_phase,
+            Some(crate::llama::live_slots::InferencePhase::Idle)
+        );
+        assert_eq!(
+            m.generation_speed_kind,
+            Some(crate::llama::live_slots::SpeedKind::Last)
+        );
+        assert!((m.generation_tokens_per_sec.unwrap() - 30.85).abs() < 1e-9);
+        assert_ne!(m.generation_tokens_per_sec, Some(0.0));
     }
 
     #[test]
@@ -653,16 +723,13 @@ mod tests {
         let ratio = m.spec_acceptance_ratio.unwrap();
         assert!((ratio - 31_710.0 / 40_018.0).abs() < 1e-12);
         assert!((m.n_busy_slots_per_decode.unwrap() - 1.05701).abs() < 1e-5);
-        assert_eq!(m.prompt_tokens_per_sec, Some(0.0));
-        assert_eq!(m.generation_tokens_per_sec, Some(0.0));
-        assert_eq!(
-            m.inference_phase,
-            Some(crate::llama::throughput::InferencePhase::Idle)
-        );
+        assert_eq!(m.prompt_tokens_per_sec, None);
+        assert_eq!(m.generation_tokens_per_sec, None);
+        assert_eq!(m.inference_phase, None);
     }
 
     #[test]
-    fn apply_metrics_prompt_delta_sets_prefill_speed() {
+    fn apply_metrics_does_not_invent_prefill_from_counter_delta() {
         let t0 = std::time::Instant::now();
         let mut m = LlamaMetrics::default();
         let mut prom = idle_prom();
@@ -670,12 +737,9 @@ mod tests {
         m.apply_metrics_at(&prom, t0);
         prom.prompt_tokens_total = 10_400;
         m.apply_metrics_at(&prom, t0 + std::time::Duration::from_secs(1));
-        assert_eq!(
-            m.inference_phase,
-            Some(crate::llama::throughput::InferencePhase::Prefill)
-        );
-        assert_eq!(m.prompt_tokens_per_sec, Some(400.0));
-        assert_eq!(m.generation_tokens_per_sec, Some(0.0));
+        assert_eq!(m.inference_phase, None);
+        assert_eq!(m.prompt_tokens_per_sec, None);
+        assert_eq!(m.generation_tokens_per_sec, None);
     }
 
     #[test]

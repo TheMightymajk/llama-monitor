@@ -67,6 +67,7 @@ pub fn parse_nvidia_csv(csv: &str) -> Result<BTreeMap<String, GpuMetrics>> {
                 vram_total,
                 sclk_mhz,
                 mclk_mhz,
+                ..GpuMetrics::default()
             },
         );
     }

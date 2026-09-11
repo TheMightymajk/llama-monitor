@@ -116,10 +116,13 @@ if (failed) process.exit(1);
     #[test]
     fn live_speed_ui_binds_inference_phase() {
         let js = super::APP_JS;
-        assert!(js.contains("l.inference_phase"));
-        assert!(js.contains("phase === 'prefill'"));
-        assert!(js.contains("phase === 'generating'"));
+        assert!(js.contains("l.prompt_speed_kind"));
+        assert!(js.contains("l.generation_speed_kind"));
+        assert!(js.contains("'prefill'"));
+        assert!(js.contains("'generation'"));
+        assert!(js.contains("function speedKindLabel"));
         assert!(super::INDEX_HTML.contains("id=\"m-prompt-sub\""));
         assert!(super::INDEX_HTML.contains("id=\"m-gen-sub\""));
+        assert!(!js.contains("phase === 'generating'"));
     }
 }

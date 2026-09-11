@@ -21,7 +21,7 @@ Web dashboard for managing [llama.cpp](https://github.com/ggerganov/llama.cpp) s
 ## Features
 
 - **Server Management** -- Start/stop llama.cpp server from configurable presets
-- **Real-time GPU Monitoring** -- Temperature, load, VRAM, power, clock speeds (AMD ROCm + NVIDIA)
+- **Real-time GPU Monitoring** -- Temperature, load, VRAM, power, clock speeds (AMDGPU sysfs, AMD ROCm, NVIDIA)
 - **Inference Metrics** -- Prompt/generation speed, KV cache usage, slot status via Prometheus endpoint
 - **Lifetime Usage & Savings** -- Persistent prompt processed / reused / generated totals with estimated API cost vs GPT-5.6 Luna and Qwen3.8-27B (GPU electricity is shown separately and is not subtracted)
 - **GPU Energy Cost** -- Persistent GPU power integration (PLN) with inference vs total breakdown; default tariff 1 PLN/kWh
@@ -34,12 +34,24 @@ Web dashboard for managing [llama.cpp](https://github.com/ggerganov/llama.cpp) s
 
 ## Supported Hardware
 
-| Vendor | Tool | Detection |
-|--------|------|-----------|
-| AMD | `rocm-smi` | Auto-detected |
+| Vendor | Telemetry | Detection |
+|--------|-----------|-----------|
+| AMD | `amdgpu` sysfs (`/sys/class/drm`) | Auto-detected when `rocm-smi` is absent |
+| AMD | `rocm-smi` | Auto-detected when the tool is present |
 | NVIDIA | `nvidia-smi` | Auto-detected |
 
-GPU backend is auto-detected at startup. Override with `--gpu-backend rocm|nvidia|none`.
+GPU **telemetry** is auto-detected at startup. Override with `--gpu-backend auto|amdgpu|rocm|nvidia|none`.
+
+Inference (Vulkan/RADV, HIP, CUDA, …) is independent of the telemetry backend. A Vulkan/RADV `llama-server` works with `--gpu-backend amdgpu` and does not need ROCm.
+
+`--gpu-backend auto` order:
+
+1. NVIDIA + working `nvidia-smi` → `nvidia`
+2. AMD + working `rocm-smi` → `rocm`
+3. AMD vendor `0x1002` with readable sysfs → `amdgpu`
+4. otherwise → `none`
+
+Missing `rocm-smi` is not an error when `auto` can fall back to `amdgpu`.
 
 ## Installation
 
@@ -58,7 +70,7 @@ The binary is at `target/release/llama-monitor`. It's a single self-contained ex
 ### Dependencies
 
 - **llama.cpp** -- `llama-server` binary (with `--metrics` and `--jinja` support)
-- **GPU monitoring** (optional) -- `rocm-smi` (AMD) or `nvidia-smi` (NVIDIA)
+- **GPU monitoring** (optional) -- AMDGPU sysfs (Vulkan/RADV, no ROCm), `rocm-smi` (AMD ROCm), or `nvidia-smi` (NVIDIA)
 
 ## Quick Start
 
@@ -82,7 +94,7 @@ Open `http://localhost:7778` in your browser. Click the gear icon to configure s
 | `--llama-server-cwd` | | `.` | Working directory for llama-server |
 | `--port` | `-p` | `7778` | Monitor web UI port |
 | `--presets-file` | | `~/.config/llama-monitor/presets.json` | Custom presets file location |
-| `--gpu-backend` | | `auto` | Force GPU backend: `auto`, `rocm`, `nvidia`, `none` |
+| `--gpu-backend` | | `auto` | Force GPU telemetry: `auto`, `amdgpu` (AMD sysfs; Vulkan compatible), `rocm`, `nvidia`, `none` |
 | `--gpu-arch` | | (from config) | GPU architecture for ROCm (e.g. `gfx906`, `gfx1100`, `auto`) |
 | `--gpu-devices` | | (from config) | Visible GPU device indices (e.g. `0,1,2,3`) |
 | `--external-log-file` | | (none) | Follow an external llama-server log file (`tail -F`). Expands `~/`. When set, Logs show this file instead of managed-process stdout/stderr |
@@ -112,9 +124,20 @@ llama-server ... >>"$HOME/.local/state/llama-monitor/qwen38-llama.log" 2>&1 &
 "$LLAMA_MONITOR" \
   --host 0.0.0.0 \
   --port 7778 \
-  --gpu-backend rocm \
+  --gpu-backend amdgpu \
   --external-log-file \
     "$HOME/.local/state/llama-monitor/qwen38-llama.log"
+```
+
+Vulkan/RADV example (no ROCm, no `rocm-smi`):
+
+```bash
+RUST_LOG=debug \
+./target/release/llama-monitor \
+  --host 127.0.0.1 \
+  --port 7779 \
+  --gpu-backend amdgpu \
+  --external-log-file ~/.local/state/llama-monitor/qwen38-llama.log
 ```
 
 `~/` in the path is expanded to the home directory. The setting is also available in **Configuration** and persists in `ui-settings.json`. While an external log path is configured, managed-process stdout/stderr is not mixed into the Logs view.
@@ -123,7 +146,7 @@ llama-server ... >>"$HOME/.local/state/llama-monitor/qwen38-llama.log" 2>&1 &
 
 GPU architecture and device selection are configurable via the **Configuration** modal (GPU Environment section), or via CLI flags. Settings are persisted to `~/.config/llama-monitor/gpu-env.json`.
 
-On startup, the monitor auto-detects GPUs via `rocminfo` (AMD) or `nvidia-smi` (NVIDIA) and pre-selects the detected architecture.
+On startup, the monitor auto-detects GPUs via `rocminfo` (AMD ROCm), `nvidia-smi` (NVIDIA), or AMDGPU sysfs (vendor `0x1002`, Vulkan/RADV compatible) and pre-selects the detected architecture when possible.
 
 ### Presets
 
@@ -146,7 +169,7 @@ Prompt processed, prompt reused (from `llamacpp:prompt_tokens_cached_total`), to
 
 ### GPU energy cost
 
-GPU power readings from `rocm-smi` / `nvidia-smi` are integrated into kWh using a trapezoid rule (per GPU, max 5 s sample gap). Totals and daily history persist to `~/.local/state/llama-monitor/energy.json` (atomic write; corrupt files are backed up and reset). Default tariff is **1 PLN/kWh**; currency is PLN.
+GPU power readings from AMDGPU sysfs / `rocm-smi` / `nvidia-smi` are integrated into kWh using a trapezoid rule (per GPU, max 5 s sample gap). Totals and daily history persist to `~/.local/state/llama-monitor/energy.json` (atomic write; corrupt files are backed up and reset). Default tariff is **1 PLN/kWh**; currency is PLN.
 
 Two energy buckets are tracked:
 
@@ -158,7 +181,7 @@ Changing the tariff updates future cost only; stored kWh and historical PLN amou
 ## Web UI
 
 ### Server Tab
-Control bar with preset selector and port. Start/stop the server. Live inference speed is a short-lived runtime reading (prefill vs generating vs idle) from process-counter deltas, not lifetime averages, and is not persisted.
+Control bar with preset selector and port. Start/stop the server. Live Prompt/Generation speed comes from llama.cpp log lines (`prompt processing` and `tg_3s`), not `/metrics` gauges. After a task finishes the last reading stays on the tile as `last`.
 
 ### Chat Tab
 Streaming chat interface that proxies to the running llama-server's `/v1/chat/completions` endpoint on the configured port. Supports reasoning/thinking blocks and Markdown rendering.
@@ -182,6 +205,7 @@ src/
     mod.rs             -- GPU power integration, inference classification, energy.json persistence
   gpu/
     mod.rs             -- GpuMetrics, GpuBackend trait, auto-detection
+    amdgpu.rs          -- AMD sysfs telemetry (Vulkan/RADV compatible)
     rocm.rs            -- AMD ROCm via rocm-smi JSON
     nvidia.rs          -- NVIDIA via nvidia-smi CSV
     env.rs             -- GPU environment config, architecture table
@@ -211,7 +235,7 @@ static/
 ### Data Flow
 
 ```
-GPU (rocm-smi/nvidia-smi)  -->  GPU Poller (500ms)  --> AppState
+GPU (amdgpu sysfs / rocm-smi / nvidia-smi)  -->  GPU Poller (500ms)  --> AppState
 llama-server /metrics       -->  Llama Poller (1s)   --> AppState
                                                          |
                                                     WebSocket (500ms)
